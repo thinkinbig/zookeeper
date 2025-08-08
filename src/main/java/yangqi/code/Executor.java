@@ -15,9 +15,9 @@ import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
 
 /**
- * 类Executor.java的实现描述：TODO 类实现描述
+ * Executor.java 瀹炵幇
  * 
- * @author yangqi 2013-5-30 下午10:48:09
+ * @author yangqi 2013-5-30 10:48:09
  */
 
 public class Executor implements Watcher, Runnable, DataMonitorListener {

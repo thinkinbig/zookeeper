@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "zookeeper.fullname" . }}
+  labels:
+    {{- include "zookeeper.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "zookeeper.fullname" . }}-headless
+  replicas: {{ .Values.zookeeper.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "zookeeper.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "zookeeper.selectorLabels" . | nindent 8 }}
+      {{- with .Values.zookeeper.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.zookeeper.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "zookeeper.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.zookeeper.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.zookeeper.securityContext | nindent 12 }}
+          image: "{{ .Values.zookeeper.image.repository }}:{{ .Values.zookeeper.image.tag }}"
+          imagePullPolicy: {{ .Values.zookeeper.image.pullPolicy }}
+          ports:
+            - name: client
+              containerPort: {{ .Values.zookeeper.service.clientPort }}
+              protocol: TCP
+            - name: server
+              containerPort: {{ .Values.zookeeper.service.serverPort }}
+              protocol: TCP
+            - name: leader-election
+              containerPort: {{ .Values.zookeeper.service.leaderElectionPort }}
+              protocol: TCP
+          env:
+            - name: ZOO_MY_ID
+              value: "$(ZOO_MY_ID)"
+            - name: ZOO_SERVERS
+              value: "$(ZOO_SERVERS)"
+            - name: ZOO_4LW_COMMANDS_WHITELIST
+              value: "*"
+          livenessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.zookeeper.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: datalog
+              mountPath: /datalog
+            - name: config
+              mountPath: /conf
+      {{- with .Values.zookeeper.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.zookeeper.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.zookeeper.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: {{ .Values.zookeeper.persistence.storageClass | quote }}
+      resources:
+        requests:
+          storage: {{ .Values.zookeeper.persistence.size }}
+  - metadata:
+      name: datalog
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: {{ .Values.zookeeper.persistence.storageClass | quote }}
+      resources:
+        requests:
+          storage: {{ .Values.zookeeper.persistence.size }}
+  - metadata:
+      name: config
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: {{ .Values.zookeeper.persistence.storageClass | quote }}
+      resources:
+        requests:
+          storage: 1Gi

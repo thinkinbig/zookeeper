@@ -1,0 +1,6 @@
+[Unit]
+Description=ZooKeeper Cluster Network
+
+[Network]
+NetworkName=zookeeper-net
+Driver=bridge

@@ -1,0 +1,22 @@
+[Unit]
+Description=ZooKeeper Cluster Node 1
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=zookeeper:3.8
+ContainerName=zookeeper1
+HostName=zookeeper1
+Network=zookeeper-net
+PublishPort=2181:2181
+PublishPort=2888:2888
+PublishPort=3888:3888
+Environment=ZOO_MY_ID=1
+Environment=ZOO_SERVERS=server.1=zookeeper1:2888:3888;2181 server.2=zookeeper2:2888:3888;2181 server.3=zookeeper3:2888:3888;2181
+Environment=ZOO_4LW_COMMANDS_WHITELIST=*
+Volume=%E/var/lib/zookeeper/zk1/data:/data
+Volume=%E/var/lib/zookeeper/zk1/datalog:/datalog
+Restart=always
+
+[Install]
+WantedBy=default.target

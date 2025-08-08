@@ -1,0 +1,16 @@
+apiVersion: v2
+name: zookeeper
+description: A Helm chart for ZooKeeper cluster
+type: application
+version: 0.1.0
+appVersion: "3.8.4"
+keywords:
+  - zookeeper
+  - distributed
+  - coordination
+home: https://zookeeper.apache.org/
+sources:
+  - https://github.com/apache/zookeeper
+maintainers:
+  - name: yangqi
+    email: yangqi@example.com

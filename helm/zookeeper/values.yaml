@@ -1,0 +1,124 @@
+# ZooKeeper Helm Chart Values
+
+# Global settings
+global:
+  nameOverride: ""
+  fullnameOverride: ""
+
+# ZooKeeper configuration
+zookeeper:
+  # Number of ZooKeeper nodes
+  replicaCount: 3
+  
+  # Image configuration
+  image:
+    repository: zookeeper
+    tag: "3.8"
+    pullPolicy: IfNotPresent
+  
+  # Service configuration
+  service:
+    type: ClusterIP
+    clientPort: 2181
+    leaderElectionPort: 3888
+    serverPort: 2888
+    
+  # Persistence configuration
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 8Gi
+    accessMode: ReadWriteOnce
+    
+  # Resources
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+      
+  # Security context
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    
+  # Pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    
+  # Configuration
+  config:
+    # ZooKeeper configuration
+    zooCfg: |
+      tickTime=2000
+      initLimit=10
+      syncLimit=5
+      dataDir=/data
+      dataLogDir=/datalog
+      clientPort=2181
+      maxClientCnxns=60
+      autopurge.snapRetainCount=3
+      autopurge.purgeInterval=1
+      
+    # Log4j configuration
+    log4j: |
+      log4j.rootLogger=INFO, stdout
+      log4j.appender.stdout=org.apache.log4j.ConsoleAppender
+      log4j.appender.stdout.layout=org.apache.log4j.PatternLayout
+      log4j.appender.stdout.layout.ConversionPattern=%d{ISO8601} - %-5p [%t:%C{1}@%L] - %m%n
+      
+  # Pod disruption budget
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+    
+  # Horizontal pod autoscaler
+  hpa:
+    enabled: false
+    minReplicas: 3
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+    
+  # Ingress configuration
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: zookeeper.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    
+  # Service account
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+    
+  # RBAC
+  rbac:
+    create: true
+    
+  # Network policy
+  networkPolicy:
+    enabled: false
+    
+  # Pod annotations
+  podAnnotations: {}
+  
+  # Pod labels
+  podLabels: {}
+  
+  # Node selector
+  nodeSelector: {}
+  
+  # Tolerations
+  tolerations: []
+  
+  # Affinity
+  affinity: {}

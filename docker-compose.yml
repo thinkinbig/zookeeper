@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  zookeeper1:
+    image: zookeeper:3.8
+    container_name: zookeeper1
+    hostname: zookeeper1
+    ports:
+      - "2181:2181"
+      - "2888:2888"
+      - "3888:3888"
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_SERVERS: server.1=zookeeper1:2888:3888;2181 server.2=zookeeper2:2888:3888;2181 server.3=zookeeper3:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: "*"
+    volumes:
+      - ./data/zk1/data:/data
+      - ./data/zk1/datalog:/datalog
+    networks:
+      - zookeeper-net
+
+  zookeeper2:
+    image: zookeeper:3.8
+    container_name: zookeeper2
+    hostname: zookeeper2
+    ports:
+      - "2182:2181"
+      - "2889:2888"
+      - "3889:3888"
+    environment:
+      ZOO_MY_ID: 2
+      ZOO_SERVERS: server.1=zookeeper1:2888:3888;2181 server.2=zookeeper2:2888:3888;2181 server.3=zookeeper3:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: "*"
+    volumes:
+      - ./data/zk2/data:/data
+      - ./data/zk2/datalog:/datalog
+    networks:
+      - zookeeper-net
+
+  zookeeper3:
+    image: zookeeper:3.8
+    container_name: zookeeper3
+    hostname: zookeeper3
+    ports:
+      - "2183:2181"
+      - "2890:2888"
+      - "3890:3888"
+    environment:
+      ZOO_MY_ID: 3
+      ZOO_SERVERS: server.1=zookeeper1:2888:3888;2181 server.2=zookeeper2:2888:3888;2181 server.3=zookeeper3:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: "*"
+    volumes:
+      - ./data/zk3/data:/data
+      - ./data/zk3/datalog:/datalog
+    networks:
+      - zookeeper-net
+
+networks:
+  zookeeper-net:
+    driver: bridge
