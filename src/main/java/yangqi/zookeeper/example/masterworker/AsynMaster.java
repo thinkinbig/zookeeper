@@ -61,7 +61,7 @@ public class AsynMaster implements Watcher, Runnable {
         }
     }
 
-    public void createMaterNode(){
+    public void createMasterNode(){
         String ctx = "ctx for " + serverId;
         zk.create(MASTER_PATH, serverId.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL,
                       new StringCallback() {
@@ -108,15 +108,18 @@ public class AsynMaster implements Watcher, Runnable {
                         break;
                     case NONODE:
                         log("node not exists");
-                        createMaterNode();
+                        createMasterNode();
                         break;
                     case NODEEXISTS:
                         log("node exists");
-                        createMaterNode();
+                        createMasterNode();
                         break;
                     case SESSIONEXPIRED:
                         log("session expired in check");
                         sleep(10);
+                        break;
+                    case CONNECTIONLOSS:
+                        checkForMaster();
                         break;
                     default:
                         log("code is " + code);

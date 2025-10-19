@@ -61,8 +61,7 @@ public class Master implements Watcher, Runnable {
 
     public void createMaterNode(){
         try {
-            zk.create(MASTER_PATH, serverId.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,
-                                        CreateMode.EPHEMERAL);
+            zk.create("/master", serverId.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
         } catch (KeeperException | InterruptedException e) {
             e.printStackTrace();
         }
