@@ -31,7 +31,7 @@ public class LeaderElector implements Watcher, AutoCloseable {
     }
 
     public CompletableFuture<Void> start() {
-        return tryBecomeLeader();
+        return checkThenDecide();
     }
 
     private CompletableFuture<Void> tryBecomeLeader() {
@@ -43,6 +43,9 @@ public class LeaderElector implements Watcher, AutoCloseable {
                     Throwable t = unwrap(ex);
                     if (t instanceof KeeperException.NodeExistsException) {
                         return watchLeader();
+                    } else if (t instanceof KeeperException.SessionExpiredException) {
+                        onExpired();
+                        return CompletableFuture.completedFuture(null);
                     } else if (t instanceof KeeperException.ConnectionLossException ||
                     t instanceof  KeeperException.OperationTimeoutException) {
                         return checkThenDecide();
@@ -55,13 +58,24 @@ public class LeaderElector implements Watcher, AutoCloseable {
 
     private CompletableFuture<Void> watchLeader() {
         if (stopped.get()) return CompletableFuture.completedFuture(null);
-        return zf.exists(MASTER, this).thenAcceptAsync(stat -> {},  electExec);
+        return zf.exists(MASTER, this).thenAcceptAsync(stat -> {},  electExec)
+                .exceptionally(ex -> {
+                    electExec.submit(this::checkThenDecide);
+                    return  null;
+                });
     }
 
     private CompletableFuture<Void> checkThenDecide() {
         if (stopped.get()) return CompletableFuture.completedFuture(null);
-        return zf.exists(MASTER, null).thenComposeAsync(stat -> (stat == null) ?
-                tryBecomeLeader(): watchLeader(),  electExec);
+        return zf.exists(MASTER, null).thenComposeAsync(stat -> {
+            if (stopped.get()) return CompletableFuture.completedFuture(null);
+
+            if (stat == null) {
+                return tryBecomeLeader();
+            } else {
+                return watchLeader();
+            }
+        },  electExec);
     }
 
     private void onElected() {
@@ -84,14 +98,15 @@ public class LeaderElector implements Watcher, AutoCloseable {
     public void process(WatchedEvent watchedEvent) {
         if (stopped.get()) return;
         if (watchedEvent.getType() == Event.EventType.NodeDeleted && MASTER.equals(watchedEvent.getPath())) {
-            tryBecomeLeader();
+            electExec.submit(this::checkThenDecide);
         } else if (watchedEvent.getState() == Event.KeeperState.Expired) {
             // connection state changed
-            onExpired();
-        } else if (watchedEvent.getType() == Event.EventType.None) {
-            // do nothing
+            electExec.submit(this::onExpired);
+        } else if (watchedEvent.getType() == Event.EventType.None
+                && watchedEvent.getState() == Event.KeeperState.SyncConnected) {
+            electExec.submit(this::checkThenDecide);
         } else {
-            watchLeader();
+            electExec.submit(this::watchLeader);
         }
     }
 
