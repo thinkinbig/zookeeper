@@ -4,13 +4,12 @@ import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooDefs;
-import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.server.quorum.Leader;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
-import java.util.logging.Level;
-import java.util.logging.LogRecord;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
 
 import static yangqi.async.ZkFutures.unwrap;
@@ -21,7 +20,10 @@ public class LeaderElector implements Watcher, AutoCloseable {
     private static final String MASTER = "/leader/master";
     private final ZkFutures zf;
     private final String serverId;
-    private volatile boolean stopped = false;
+    private final ExecutorService electExec =
+            Executors.newSingleThreadExecutor(r -> { var t = new Thread(r,"election");
+                t.setDaemon(true); return t; });
+    private final AtomicBoolean stopped = new AtomicBoolean(false);
 
     public LeaderElector(ZkFutures zf, String serverId) {
         this.zf = zf;
@@ -33,10 +35,10 @@ public class LeaderElector implements Watcher, AutoCloseable {
     }
 
     private CompletableFuture<Void> tryBecomeLeader() {
-        if (stopped) return CompletableFuture.completedFuture(null);
+        if (stopped.get()) return CompletableFuture.completedFuture(null);
         byte[] payload = serverId.getBytes(StandardCharsets.UTF_8);
         return zf.createEphemeral(MASTER, payload, ZooDefs.Ids.OPEN_ACL_UNSAFE)
-                .thenAccept(path->onElected())
+                .thenAcceptAsync(path->onElected(),  electExec)
                 .exceptionallyCompose(ex -> {
                     Throwable t = unwrap(ex);
                     if (t instanceof KeeperException.NodeExistsException) {
@@ -52,13 +54,14 @@ public class LeaderElector implements Watcher, AutoCloseable {
     }
 
     private CompletableFuture<Void> watchLeader() {
-        if (stopped) return CompletableFuture.completedFuture(null);
-        return zf.exists(MASTER, this).thenAccept(stat -> {});
+        if (stopped.get()) return CompletableFuture.completedFuture(null);
+        return zf.exists(MASTER, this).thenAcceptAsync(stat -> {},  electExec);
     }
 
     private CompletableFuture<Void> checkThenDecide() {
-        if (stopped) return CompletableFuture.completedFuture(null);
-        return zf.exists(MASTER, null).thenCompose(stat -> (stat == null) ? tryBecomeLeader(): watchLeader());
+        if (stopped.get()) return CompletableFuture.completedFuture(null);
+        return zf.exists(MASTER, null).thenComposeAsync(stat -> (stat == null) ?
+                tryBecomeLeader(): watchLeader(),  electExec);
     }
 
     private void onElected() {
@@ -72,12 +75,14 @@ public class LeaderElector implements Watcher, AutoCloseable {
 
     @Override
     public void close() throws Exception {
-        stopped = true;
+        if (stopped.compareAndSet(false, true)) {
+            electExec.shutdown();
+        }
     }
 
     @Override
     public void process(WatchedEvent watchedEvent) {
-        if (stopped) return;
+        if (stopped.get()) return;
         if (watchedEvent.getType() == Event.EventType.NodeDeleted && MASTER.equals(watchedEvent.getPath())) {
             tryBecomeLeader();
         } else if (watchedEvent.getState() == Event.KeeperState.Expired) {

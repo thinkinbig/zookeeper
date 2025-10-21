@@ -70,7 +70,7 @@ public class ZkFutures implements AutoCloseable{
         ScheduledFuture<?> task = sch.schedule(() -> timeout.completeExceptionally(new TimeoutException()), d.toMillis(), TimeUnit.MILLISECONDS);
 
         cf.whenComplete((r, t) -> task.cancel(false));
-        return timeout;
+        return cf.applyToEither(timeout, x->x);
     }
 
     public static <T> CompletableFuture<T> retryAsync(Supplier<CompletableFuture<T>> op,
