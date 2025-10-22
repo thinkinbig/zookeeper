@@ -1,4 +1,4 @@
-package yangqi.async;
+package zeyu.async;
 
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
@@ -45,6 +45,9 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
 
     private static final Logger LOG = Logger.getLogger(WorkersWatcher.class.getName());
 
+    private static final ZkFutures.ChildrenSnapshot EMPTY_CHILDREN_SNAPSHOT =
+            new ZkFutures.ChildrenSnapshot(java.util.Collections.emptyList(), null);
+
     /** 最近一次成功获取的快照；用于计算增量（初始为空集） */
     private Snapshot last = new Snapshot(Set.of(), -1, Instant.EPOCH);
 
@@ -78,10 +81,12 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
     private CompletableFuture<Void> refreshWorkers() {
         if (stopped.get()) { return CompletableFuture.completedFuture(null); }
 
-        return zf.getChildren(path, this)
-                .thenAcceptAsync(cs -> {
+        return zf.getChildrenOrEmpty(path, this)
+                .thenAcceptAsync(op -> {
                     if (stopped.get()) { return; }
 
+                    // 父路径不存在（NONODE） 时不再触发异常/自愈风暴，而是自然视为“当前 worker 集为空”，首帧也会回调一次，贴合“快照版”语义s
+                    var cs = op.orElse(EMPTY_CHILDREN_SNAPSHOT);
                     // 构造当前帧快照
                     Snapshot curr = snapshotFrom(cs);
                     // 基于上一帧计算增量
