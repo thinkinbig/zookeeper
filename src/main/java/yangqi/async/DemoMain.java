@@ -30,7 +30,9 @@ public class DemoMain
         ) {
             ScheduledExecutorService scheduler = cs.sch;
             ZkFutures zf = new ZkFutures(connect, 10_000, event -> {}, scheduler);
-            LeaderElector elector = new LeaderElector(zf, id);
+            LeaderElector elector = new LeaderElector(zf, id,
+                    p -> System.out.println("Leader elected:" + p)
+                    );
             CompletableFuture<Void> started = ZkFutures.withTimeout(
                     ZkFutures.retryAsync(elector::start, 5, Duration.ofMillis(200), scheduler,
                             KeeperException.ConnectionLossException.class,

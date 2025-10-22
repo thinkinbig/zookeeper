@@ -6,14 +6,16 @@ import org.apache.zookeeper.data.Stat;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.function.Supplier;
 
-public class ZkFutures implements AutoCloseable{
+public class ZkFutures implements AutoCloseable {
     private final ZooKeeper zk;
-    private final ScheduledExecutorService  scheduler;
+    private final ScheduledExecutorService scheduler;
 
     public ZkFutures(String connectString, int sessionTimeoutMs,
                      Watcher defaultWatcher, ScheduledExecutorService scheduler) throws IOException {
@@ -27,50 +29,80 @@ public class ZkFutures implements AutoCloseable{
         );
     }
 
-    public ZooKeeper raw() { return zk; }
+    public ZooKeeper raw() {
+        return zk;
+    }
 
-    public ScheduledExecutorService scheduler() { return scheduler; }
+    public ScheduledExecutorService scheduler() {
+        return scheduler;
+    }
 
     public CompletableFuture<String> createEphemeral(String path, byte[] data,
-                                                     List<ACL>acl) {
+                                                     List<ACL> acl) {
         CompletableFuture<String> cf = new CompletableFuture<>();
-        zk.create(path, data, acl, CreateMode.EPHEMERAL, (rc, p, ctx, name) -> completeByCode(cf, rc, name), null);
+        zk.create(path, data, acl, CreateMode.EPHEMERAL, (rc, p, ctx, name) -> completeByCode(cf, rc, name, p), null);
         return cf;
     }
 
     public CompletableFuture<String> createEphemeralSequential(String path, byte[] data, List<ACL> acl) {
         CompletableFuture<String> cf = new CompletableFuture<>();
-        zk.create(path, data, acl, CreateMode.EPHEMERAL_SEQUENTIAL, (rc, p, ctx, name) -> completeByCode(cf, rc, name), null);
+        zk.create(path, data, acl, CreateMode.EPHEMERAL_SEQUENTIAL, (rc, p, ctx, name) -> completeByCode(cf, rc, name, p), null);
         return cf;
     }
 
-    public CompletableFuture<Stat> exists(String path, Watcher watcher) {
-        CompletableFuture<Stat> cf = new CompletableFuture<>();
-        zk.exists(path, watcher, (rc, p, ctx, stat) -> completeByCode(cf, rc, stat), null);
+    public record ChildrenSnapshot(List<String> children, Stat stat) {}
+
+    public CompletableFuture<ChildrenSnapshot> getChildren(String path, Watcher watcher) {
+        CompletableFuture<ChildrenSnapshot> cf = new CompletableFuture<>();
+        zk.getChildren(path, watcher,
+                (rc, p, ctx, children, stat) -> completeByCode(cf, rc,
+                        new ChildrenSnapshot(Collections.unmodifiableList(children), stat), p), null);
+        return cf;
+    }
+
+    public CompletableFuture<Optional<ChildrenSnapshot>> getChildrenOrEmpty(String path, Watcher watcher) {
+        CompletableFuture<Optional<ChildrenSnapshot>> cf = new CompletableFuture<>();
+        zk.getChildren(path, watcher,
+                (rc, p, ctx, children, stat) -> completeByCodeOrEmpty(cf, rc,
+                        new ChildrenSnapshot(Collections.unmodifiableList(children), stat), p), null);
+        return cf;
+    }
+
+    public CompletableFuture<Optional<Stat>> exists(String path, Watcher watcher) {
+        var cf = new CompletableFuture<Optional<Stat>>();
+        zk.exists(path, watcher,
+                (rc, p, ctx, stat) -> completeByCodeOrEmpty(cf, rc, stat, p), null);
         return cf;
     }
 
     public CompletableFuture<Void> delete(String path, int version) {
         CompletableFuture<Void> cf = new CompletableFuture<>();
-        zk.delete(path, version, (rc, p, ctx) -> completeByCode(cf, rc, null), null);
+        zk.delete(path, version, (rc, p, ctx) -> completeByCode(cf, rc, (Void) null, p), null);
         return cf;
     }
 
-    private static <T> void completeByCode(CompletableFuture<T> cf, int rc,  T okVal) {
-        KeeperException.Code code = KeeperException.Code.get(rc);
-        if (Objects.requireNonNull(code) == KeeperException.Code.OK) {
-            cf.complete(okVal);
-        } else {
-            cf.completeExceptionally(KeeperException.create(code));
-        }
+    private static <T> void completeByCode(CompletableFuture<T> cf, int rc, T okVal, String path) {
+        var code = KeeperException.Code.get(rc);
+        if (code == KeeperException.Code.OK) cf.complete(okVal);
+        else cf.completeExceptionally(KeeperException.create(code, path));
     }
+
+    private static <T> void completeByCodeOrEmpty(CompletableFuture<Optional<T>> cf, int rc, T okVal, String path) {
+        var code = KeeperException.Code.get(rc);
+        if (code == KeeperException.Code.OK) cf.complete(Optional.ofNullable(okVal));
+        else if (code == KeeperException.Code.NONODE)  cf.complete(Optional.empty());
+        else cf.completeExceptionally(KeeperException.create(code, path));
+    }
+
+
+
 
     public static <T> CompletableFuture<T> withTimeout(CompletableFuture<T> cf, Duration d, ScheduledExecutorService sch) {
         final CompletableFuture<T> timeout = new CompletableFuture<>();
         ScheduledFuture<?> task = sch.schedule(() -> timeout.completeExceptionally(new TimeoutException()), d.toMillis(), TimeUnit.MILLISECONDS);
 
         cf.whenComplete((r, t) -> task.cancel(false));
-        return cf.applyToEither(timeout, x->x);
+        return cf.applyToEither(timeout, x -> x);
     }
 
     public static <T> CompletableFuture<T> retryAsync(Supplier<CompletableFuture<T>> op,
@@ -86,12 +118,12 @@ public class ZkFutures implements AutoCloseable{
     private static <T> void attempt(Supplier<CompletableFuture<T>> op, int n, int max,
                                     Duration baseBackoff, ScheduledExecutorService sch,
                                     CompletableFuture<T> sink, Class<?>[] retryOn) {
-        op.get().whenComplete((v,e) -> {
+        op.get().whenComplete((v, e) -> {
             if (e == null) {
                 sink.complete(v);
             } else if (n < max && shouldRetry(e, retryOn)) {
                 long delay = (long) (baseBackoff.toMillis() * Math.pow(2, n) * (0.5 + ThreadLocalRandom.current().nextDouble()));
-                sch.schedule(() -> attempt(op, n+1, max, baseBackoff, sch, sink, retryOn), delay, TimeUnit.MILLISECONDS);
+                sch.schedule(() -> attempt(op, n + 1, max, baseBackoff, sch, sink, retryOn), delay, TimeUnit.MILLISECONDS);
             } else {
                 sink.completeExceptionally(e);
             }
@@ -106,7 +138,9 @@ public class ZkFutures implements AutoCloseable{
             }
         }
 
-        if (cause instanceof KeeperException.ConnectionLossException) { return true; }
+        if (cause instanceof KeeperException.ConnectionLossException) {
+            return true;
+        }
         return cause instanceof KeeperException.OperationTimeoutException;
     }
 
