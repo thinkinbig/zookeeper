@@ -64,8 +64,7 @@ public class ZkFutures implements AutoCloseable {
 
     public CompletableFuture<String> createPersistent(String path, byte[] data, List<ACL> acl) {
         CompletableFuture<String> cf = new CompletableFuture<>();
-        zk.create(path, data, acl, CreateMode.PERSISTENT, (rc, p, ctx, name) ->
-                completeByCode(cf, rc, name, p), null);
+        zk.create(path, data, acl, CreateMode.PERSISTENT, (rc, p, ctx, name) -> completeByCode(cf, rc, name, p), null);
         return cf;
     }
 
@@ -74,18 +73,18 @@ public class ZkFutures implements AutoCloseable {
                 .thenApply(p -> (Void) null)
                 .exceptionally(ex -> {
                     Throwable t = ZkFutures.unwrap(ex);
-                    if (t instanceof KeeperException.NodeExistsException) return null; // 当成功
+                    if (t instanceof KeeperException.NodeExistsException)
+                        return null; // 当成功
                     throw new CompletionException(t);
                 });
     }
 
     public CompletableFuture<String> createPersistentSequential(String path, byte[] data, List<ACL> acl) {
         CompletableFuture<String> cf = new CompletableFuture<>();
-        zk.create(path, data, acl, CreateMode.PERSISTENT_SEQUENTIAL, (rc, p, ctx, name) ->
-                completeByCode(cf, rc, name, p), null);
+        zk.create(path, data, acl, CreateMode.PERSISTENT_SEQUENTIAL,
+                (rc, p, ctx, name) -> completeByCode(cf, rc, name, p), null);
         return cf;
     }
-
 
     public record ChildrenSnapshot(List<String> children, Stat stat) {
     }
@@ -108,20 +107,20 @@ public class ZkFutures implements AutoCloseable {
         return cf;
     }
 
-    public record DataResult(byte[] data, Stat stat) {
+    public record NodeData(byte[] data, Stat stat) {
     }
 
-    public CompletableFuture<DataResult> getData(String path, Watcher watcher) {
-        CompletableFuture<DataResult> cf = new CompletableFuture<>();
+    public CompletableFuture<NodeData> getData(String path, Watcher watcher) {
+        CompletableFuture<NodeData> cf = new CompletableFuture<>();
         zk.getData(path, watcher, (rc, p, ctx, data, stat) -> completeByCode(cf, rc,
-                new DataResult(data, stat), p), null);
+                new NodeData(data, stat), p), null);
         return cf;
     }
 
-    public CompletableFuture<Optional<DataResult>> getDataOrEmpty(String path, Watcher watcher) {
-        CompletableFuture<Optional<DataResult>> cf = new CompletableFuture<>();
+    public CompletableFuture<Optional<NodeData>> getDataOrEmpty(String path, Watcher watcher) {
+        CompletableFuture<Optional<NodeData>> cf = new CompletableFuture<>();
         zk.getData(path, watcher, (rc, p, ctx, data, stat) -> completeByCodeOrEmpty(cf, rc,
-                new DataResult(data, stat), p), null);
+                new NodeData(data, stat), p), null);
         return cf;
     }
 
@@ -234,7 +233,8 @@ public class ZkFutures implements AutoCloseable {
     public static class MultiOps {
         private final List<Op> operations = new ArrayList<>();
 
-        private MultiOps() {}
+        private MultiOps() {
+        }
 
         public static MultiOps create() {
             return new MultiOps();

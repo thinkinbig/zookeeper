@@ -75,7 +75,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
     private ScheduledFuture<?> compensationTask;
 
     /** Worker选择策略：根据任务数据和状态信息选择最适合的worker，无可用时返回null */
-    private final Function<ZkFutures.DataResult, String> pickWorker;
+    private final Function<ZkFutures.NodeData, String> pickWorker;
 
     /** Fencing 令牌：用于防止旧会话回魂 */
     private final long fencingToken;
@@ -90,7 +90,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * @param pickWorker Worker选择策略函数
      */
     public TasksAssigner(ZkFutures zf, String tasksPath, String claimsPath, String assignPath,
-            Function<ZkFutures.DataResult, String> pickWorker) {
+            Function<ZkFutures.NodeData, String> pickWorker) {
         this.zf = zf;
         this.tasksPath = tasksPath;
         this.claimsPath = claimsPath;

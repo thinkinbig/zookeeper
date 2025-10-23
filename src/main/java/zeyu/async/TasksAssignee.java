@@ -69,7 +69,7 @@ public class TasksAssignee implements Watcher, AutoCloseable {
     private final AtomicBoolean stopped = new AtomicBoolean(false);
 
     /** 任务处理回调：接收任务数据和状态信息，返回处理结果 */
-    private final Consumer<ZkFutures.DataResult> taskHandler;
+    private final Consumer<ZkFutures.NodeData> taskHandler;
 
     /** 空子节点快照常量，用于处理空任务列表 */
     private static final ZkFutures.ChildrenSnapshot EMPTY_CHILDREN_SNAPSHOT = new ZkFutures.ChildrenSnapshot(
@@ -85,7 +85,7 @@ public class TasksAssignee implements Watcher, AutoCloseable {
      * @param taskHandler 任务处理回调
      */
     public TasksAssignee(ZkFutures zf, String workerId, String workersPath, String assignPath,
-            Consumer<ZkFutures.DataResult> taskHandler) {
+            Consumer<ZkFutures.NodeData> taskHandler) {
         this.zf = zf;
         this.workerId = workerId;
         this.workersPath = workersPath;
@@ -159,7 +159,7 @@ public class TasksAssignee implements Watcher, AutoCloseable {
         return zf.getData(taskPath, null)
                 .thenComposeAsync(data -> {
                     try {
-                        // 调用任务处理回调，传递完整的DataResult
+                        // 调用任务处理回调，传递完整的NodeData
                         taskHandler.accept(data);
 
                         // 处理完成后删除任务节点
