@@ -62,6 +62,31 @@ public class ZkFutures implements AutoCloseable {
         return cf;
     }
 
+    public CompletableFuture<String> createPersistent(String path, byte[] data, List<ACL> acl) {
+        CompletableFuture<String> cf = new CompletableFuture<>();
+        zk.create(path, data, acl, CreateMode.PERSISTENT, (rc, p, ctx, name) ->
+                completeByCode(cf, rc, name, p), null);
+        return cf;
+    }
+
+    public CompletableFuture<Void> ensurePersistent(String path) {
+        return createPersistent(path, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE)
+                .thenApply(p -> (Void) null)
+                .exceptionally(ex -> {
+                    Throwable t = ZkFutures.unwrap(ex);
+                    if (t instanceof KeeperException.NodeExistsException) return null; // 当成功
+                    throw new CompletionException(t);
+                });
+    }
+
+    public CompletableFuture<String> createPersistentSequential(String path, byte[] data, List<ACL> acl) {
+        CompletableFuture<String> cf = new CompletableFuture<>();
+        zk.create(path, data, acl, CreateMode.PERSISTENT_SEQUENTIAL, (rc, p, ctx, name) ->
+                completeByCode(cf, rc, name, p), null);
+        return cf;
+    }
+
+
     public record ChildrenSnapshot(List<String> children, Stat stat) {
     }
 
