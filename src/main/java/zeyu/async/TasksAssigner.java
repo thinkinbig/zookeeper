@@ -44,53 +44,53 @@ import static zeyu.async.ZkFutures.unwrap;
 public class TasksAssigner implements Watcher, AutoCloseable {
     /** ZooKeeper 异步操作封装 */
     private final ZkFutures zf;
-    
+
     /** 待处理任务路径，如 "/tasks" */
     private final String tasksPath;
-    
+
     /** 任务认领路径，如 "/claims" */
     private final String claimsPath;
-    
+
     /** 任务分配路径，如 "/assign" */
     private final String assignPath;
-    
+
     /** 单线程执行器，确保所有任务分配操作串行执行，避免竞态条件 */
     private final ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
         var t = new Thread(r, "tasksAssign");
         t.setDaemon(true);
         return t;
     });
-    
+
     /** 停止标志，用于优雅关闭 */
     private final AtomicBoolean stopped = new AtomicBoolean(false);
-    
+
     /** 定期补偿调度器，用于执行最终一致性补偿任务 */
     private final ScheduledExecutorService compensationScheduler = Executors.newScheduledThreadPool(1, r -> {
         var t = new Thread(r, "tasks-compensation");
         t.setDaemon(true);
         return t;
     });
-    
+
     /** 补偿任务句柄，用于取消定期补偿 */
     private ScheduledFuture<?> compensationTask;
 
-    /** Worker选择策略：根据任务数据选择最适合的worker，无可用时返回null */
-    private final Function<byte[], String> pickWorker;
-    
+    /** Worker选择策略：根据任务数据和状态信息选择最适合的worker，无可用时返回null */
+    private final Function<ZkFutures.DataResult, String> pickWorker;
+
     /** Fencing 令牌：用于防止旧会话回魂 */
     private final long fencingToken;
 
     /**
      * 构造函数
      * 
-     * @param zf ZooKeeper异步操作封装
-     * @param tasksPath 待处理任务路径
-     * @param claimsPath 任务认领路径  
+     * @param zf         ZooKeeper异步操作封装
+     * @param tasksPath  待处理任务路径
+     * @param claimsPath 任务认领路径
      * @param assignPath 任务分配路径
      * @param pickWorker Worker选择策略函数
      */
     public TasksAssigner(ZkFutures zf, String tasksPath, String claimsPath, String assignPath,
-                         Function<byte[], String> pickWorker) {
+            Function<ZkFutures.DataResult, String> pickWorker) {
         this.zf = zf;
         this.tasksPath = tasksPath;
         this.claimsPath = claimsPath;
@@ -108,7 +108,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * 
      * @return 启动完成的Future
      */
-    public CompletableFuture<Void> start() { 
+    public CompletableFuture<Void> start() {
         // 确保所有必要的路径都存在
         return zf.ensurePersistent(tasksPath)
                 .thenComposeAsync(v -> zf.ensurePersistent(claimsPath), exec)
@@ -118,19 +118,17 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                     if (!zf.isMultiEnabled()) {
                         // 启动定期补偿任务，每30秒执行一次
                         compensationTask = compensationScheduler.scheduleWithFixedDelay(
-                            this::runCompensation, 
-                            30, 30, TimeUnit.SECONDS
-                        );
+                                this::runCompensation,
+                                30, 30, TimeUnit.SECONDS);
                     }
-                    
+
                     return refreshTasks();
                 }, exec);
     }
 
     /** 空子节点快照常量，用于处理空任务列表 */
-    private static final ZkFutures.ChildrenSnapshot EMPTY_CHILDREN_SNAPSHOT =
-            new ZkFutures.ChildrenSnapshot(Collections.emptyList(), null);
-
+    private static final ZkFutures.ChildrenSnapshot EMPTY_CHILDREN_SNAPSHOT = new ZkFutures.ChildrenSnapshot(
+            Collections.emptyList(), null);
 
     /**
      * 刷新任务列表并处理所有待分配任务
@@ -141,13 +139,16 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * @return 任务处理完成的Future
      */
     private CompletableFuture<Void> refreshTasks() {
-        if (stopped.get()) return CompletableFuture.completedFuture(null);
+        if (stopped.get())
+            return CompletableFuture.completedFuture(null);
         return zf.ensurePersistent(tasksPath)
                 .thenComposeAsync(v -> zf.getChildrenOrEmpty(tasksPath, this), exec)
                 .thenComposeAsync(opt -> {
-                    if (stopped.get()) return CompletableFuture.completedFuture(null);
+                    if (stopped.get())
+                        return CompletableFuture.completedFuture(null);
                     var ids = opt.orElse(EMPTY_CHILDREN_SNAPSHOT).children();
-                    if (ids.isEmpty()) return CompletableFuture.completedFuture(null);
+                    if (ids.isEmpty())
+                        return CompletableFuture.completedFuture(null);
 
                     var list = new ArrayList<CompletableFuture<Void>>(ids.size());
                     for (String id : ids) {
@@ -167,7 +168,8 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * @return 自愈完成的Future
      */
     private CompletableFuture<Void> onFailGoSelfHeal() {
-        if (stopped.get()) return CompletableFuture.completedFuture(null);
+        if (stopped.get())
+            return CompletableFuture.completedFuture(null);
         Supplier<CompletableFuture<Void>> op = () -> CompletableFuture.completedFuture(null)
                 .thenComposeAsync(v -> stopped.get() ? CompletableFuture.completedFuture(null) : refreshTasks(), exec);
         return ZkFutures.retryAsync(
@@ -176,10 +178,8 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                 Duration.ofMillis(100),
                 zf.scheduler(),
                 KeeperException.ConnectionLossException.class,
-                KeeperException.OperationTimeoutException.class
-        ).exceptionally(e -> null);
+                KeeperException.OperationTimeoutException.class).exceptionally(e -> null);
     }
-
 
     /**
      * 认领并分配任务
@@ -191,19 +191,20 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * @return 分配完成的Future
      */
     private CompletableFuture<Void> claimThenAssign(String taskId) {
-        if (stopped.get()) return CompletableFuture.completedFuture(null);
-        
+        if (stopped.get())
+            return CompletableFuture.completedFuture(null);
+
         // 创建 fencing 数据：包含时间戳和随机数，防止旧会话回魂
         byte[] fencingData = createFencingData();
         String claimZ = claimsPath + "/" + taskId;
-        String taskZ  = tasksPath  + "/" + taskId;
+        String taskZ = tasksPath + "/" + taskId;
 
         return zf.ensurePersistent(tasksPath)
                 .thenComposeAsync(v -> zf.ensurePersistent(claimsPath), exec)
                 .thenComposeAsync(v -> zf.createEphemeral(claimZ, fencingData, ZooDefs.Ids.OPEN_ACL_UNSAFE), exec)
                 .thenComposeAsync(v -> zf.getData(taskZ, this), exec)
                 .thenComposeAsync(dr -> {
-                    String worker = pickWorker.apply(dr.data());
+                    String worker = pickWorker.apply(dr);
                     if (worker == null) {
                         // 无可用 worker：释放认领
                         return safeReleaseClaim(claimZ);
@@ -238,9 +239,6 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                 });
     }
 
-
-
-
     /**
      * 尝试使用 multi 操作进行原子性任务分配
      * 
@@ -253,9 +251,9 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * - 减少客户端回调处理开销
      * 
      * @param assignZ 分配节点路径
-     * @param data 任务数据
-     * @param taskZ 任务节点路径
-     * @param claimZ 认领节点路径
+     * @param data    任务数据
+     * @param taskZ   任务节点路径
+     * @param claimZ  认领节点路径
      * @return 原子分配完成的Future
      */
     private CompletableFuture<Void> tryAtomicAssignment(String assignZ, byte[] data, String taskZ, String claimZ) {
@@ -277,18 +275,18 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * 采用最终一致性模式：分步执行操作，通过补偿机制保证最终一致性。
      * 
      * @param assignZ 分配节点路径
-     * @param data 任务数据
-     * @param taskZ 任务节点路径
-     * @param claimZ 认领节点路径
+     * @param data    任务数据
+     * @param taskZ   任务节点路径
+     * @param claimZ  认领节点路径
      * @return 非原子分配完成的Future
      */
-    private CompletableFuture<Void> fallbackNonAtomicAssignment(String assignZ, byte[] data, String taskZ, String claimZ) {
+    private CompletableFuture<Void> fallbackNonAtomicAssignment(String assignZ, byte[] data, String taskZ,
+            String claimZ) {
         return CompletableFuture.completedFuture(null)
                 .thenComposeAsync(v -> zf.createEphemeral(assignZ, data, ZooDefs.Ids.OPEN_ACL_UNSAFE), exec)
                 .thenComposeAsync(x -> zf.delete(taskZ, -1).exceptionally(e -> null), exec)
                 .thenComposeAsync(x -> safeReleaseClaim(claimZ), exec);
     }
-
 
     /**
      * 创建 Fencing 数据
@@ -314,13 +312,15 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * @return true 如果是当前会话的数据
      */
     private boolean isValidFencingData(byte[] data) {
-        if (data == null || data.length == 0) return false;
-        
+        if (data == null || data.length == 0)
+            return false;
+
         try {
             String fencingString = new String(data);
             String[] parts = fencingString.split(":");
-            if (parts.length != 3) return false;
-            
+            if (parts.length != 3)
+                return false;
+
             long token = Long.parseLong(parts[2]);
             return token == fencingToken;
         } catch (Exception e) {
@@ -341,17 +341,17 @@ public class TasksAssigner implements Watcher, AutoCloseable {
         Supplier<CompletableFuture<Void>> op = () -> zf.delete(claimZ, -1);
         return ZkFutures.retryAsync(
                 op,
-                3,                               // 尝试次数
-                Duration.ofMillis(100),          // 退避
+                3, // 尝试次数
+                Duration.ofMillis(100), // 退避
                 zf.scheduler(),
                 KeeperException.ConnectionLossException.class,
-                KeeperException.OperationTimeoutException.class
-        ).exceptionally(e -> {
-            // NoNode 当成功；其他错误打点后吞掉，避免卡链
-            Throwable t = unwrap(e);
-            if (t instanceof KeeperException.NoNodeException) return null;
-            return null;
-        });
+                KeeperException.OperationTimeoutException.class).exceptionally(e -> {
+                    // NoNode 当成功；其他错误打点后吞掉，避免卡链
+                    Throwable t = unwrap(e);
+                    if (t instanceof KeeperException.NoNodeException)
+                        return null;
+                    return null;
+                });
     }
 
     /**
@@ -361,19 +361,20 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * 包括孤儿claims清理、孤儿tasks重新分配、重复分配检测等。
      */
     private void runCompensation() {
-        if (stopped.get()) return;
-        
+        if (stopped.get())
+            return;
+
         CompletableFuture.runAsync(() -> {
             try {
                 // 1. 检测孤儿 claims（有 claim 但没有对应的 task）
                 compensateOrphanClaims();
-                
+
                 // 2. 检测孤儿 tasks（有 task 但没有对应的 claim）
                 compensateOrphanTasks();
-                
+
                 // 3. 检测重复分配（同一个 task 被分配给多个 worker）
                 compensateDuplicateAssignments();
-                
+
             } catch (Exception e) {
                 // 补偿失败不影响主流程，只记录日志
                 System.err.println("Compensation failed: " + e.getMessage());
@@ -393,40 +394,40 @@ public class TasksAssigner implements Watcher, AutoCloseable {
         return zf.ensurePersistent(claimsPath)
                 .thenComposeAsync(v -> zf.getChildrenOrEmpty(claimsPath, null), exec)
                 .thenComposeAsync(opt -> {
-                    if (opt.isEmpty()) return CompletableFuture.completedFuture(null);
-                    
+                    if (opt.isEmpty())
+                        return CompletableFuture.completedFuture(null);
+
                     List<CompletableFuture<Void>> cleanupTasks = new ArrayList<>();
                     for (String claimId : opt.get().children()) {
                         String claimZ = claimsPath + "/" + claimId;
                         String taskZ = tasksPath + "/" + claimId;
-                        
+
                         // 检查对应的 task 是否存在，并验证 fencing 数据
                         cleanupTasks.add(
-                            zf.exists(taskZ, null)
-                                .thenComposeAsync(taskExists -> {
-                                    if (taskExists.isEmpty()) {
-                                        // task 不存在，删除孤儿 claim
-                                        return zf.delete(claimZ, -1)
-                                                .exceptionally(e -> null);
-                                    }
-                                    return CompletableFuture.completedFuture(null);
-                                }, exec)
-                                .thenComposeAsync(v -> {
-                                    // 验证 fencing 数据，清理旧会话的认领
-                                    return zf.getData(claimZ, null)
-                                            .thenComposeAsync(data -> {
-                                                if (!isValidFencingData(data.data())) {
-                                                    // 旧会话的认领，删除
-                                                    return zf.delete(claimZ, -1)
-                                                            .exceptionally(e -> null);
-                                                }
-                                                return CompletableFuture.completedFuture(null);
-                                            }, exec)
-                                            .exceptionally(e -> null);
-                                }, exec)
-                        );
+                                zf.exists(taskZ, null)
+                                        .thenComposeAsync(taskExists -> {
+                                            if (taskExists.isEmpty()) {
+                                                // task 不存在，删除孤儿 claim
+                                                return zf.delete(claimZ, -1)
+                                                        .exceptionally(e -> null);
+                                            }
+                                            return CompletableFuture.completedFuture(null);
+                                        }, exec)
+                                        .thenComposeAsync(v -> {
+                                            // 验证 fencing 数据，清理旧会话的认领
+                                            return zf.getData(claimZ, null)
+                                                    .thenComposeAsync(data -> {
+                                                        if (!isValidFencingData(data.data())) {
+                                                            // 旧会话的认领，删除
+                                                            return zf.delete(claimZ, -1)
+                                                                    .exceptionally(e -> null);
+                                                        }
+                                                        return CompletableFuture.completedFuture(null);
+                                                    }, exec)
+                                                    .exceptionally(e -> null);
+                                        }, exec));
                     }
-                    
+
                     return CompletableFuture.allOf(cleanupTasks.toArray(CompletableFuture[]::new));
                 }, exec);
     }
@@ -443,25 +444,25 @@ public class TasksAssigner implements Watcher, AutoCloseable {
         return zf.ensurePersistent(tasksPath)
                 .thenComposeAsync(v -> zf.getChildrenOrEmpty(tasksPath, null), exec)
                 .thenComposeAsync(opt -> {
-                    if (opt.isEmpty()) return CompletableFuture.completedFuture(null);
-                    
+                    if (opt.isEmpty())
+                        return CompletableFuture.completedFuture(null);
+
                     List<CompletableFuture<Void>> reassignTasks = new ArrayList<>();
                     for (String taskId : opt.get().children()) {
                         String claimZ = claimsPath + "/" + taskId;
-                        
+
                         // 检查对应的 claim 是否存在
                         reassignTasks.add(
-                            zf.exists(claimZ, null)
-                                .thenComposeAsync(claimExists -> {
-                                    if (claimExists.isEmpty()) {
-                                        // claim 不存在，重新分配任务
-                                        return claimThenAssign(taskId);
-                                    }
-                                    return CompletableFuture.completedFuture(null);
-                                }, exec)
-                        );
+                                zf.exists(claimZ, null)
+                                        .thenComposeAsync(claimExists -> {
+                                            if (claimExists.isEmpty()) {
+                                                // claim 不存在，重新分配任务
+                                                return claimThenAssign(taskId);
+                                            }
+                                            return CompletableFuture.completedFuture(null);
+                                        }, exec));
                     }
-                    
+
                     return CompletableFuture.allOf(reassignTasks.toArray(CompletableFuture[]::new));
                 }, exec);
     }
@@ -478,21 +479,22 @@ public class TasksAssigner implements Watcher, AutoCloseable {
         return zf.ensurePersistent(assignPath)
                 .thenComposeAsync(v -> zf.getChildrenOrEmpty(assignPath, null), exec)
                 .thenComposeAsync(opt -> {
-                    if (opt.isEmpty()) return CompletableFuture.completedFuture(null);
-                    
+                    if (opt.isEmpty())
+                        return CompletableFuture.completedFuture(null);
+
                     // 收集所有 worker 的分配情况
                     List<CompletableFuture<List<String>>> workerAssignments = new ArrayList<>();
                     for (String worker : opt.get().children()) {
                         String workerAssignPath = assignPath + "/" + worker;
                         workerAssignments.add(
-                            zf.ensurePersistent(workerAssignPath)
-                                .thenComposeAsync(v -> zf.getChildrenOrEmpty(workerAssignPath, null), exec)
-                                .thenApplyAsync(childrenOpt -> 
-                                    childrenOpt.map(ZkFutures.ChildrenSnapshot::children)
-                                               .orElse(List.of()), exec)
-                        );
+                                zf.ensurePersistent(workerAssignPath)
+                                        .thenComposeAsync(v -> zf.getChildrenOrEmpty(workerAssignPath, null), exec)
+                                        .thenApplyAsync(
+                                                childrenOpt -> childrenOpt.map(ZkFutures.ChildrenSnapshot::children)
+                                                        .orElse(List.of()),
+                                                exec));
                     }
-                    
+
                     return CompletableFuture.allOf(workerAssignments.toArray(CompletableFuture[]::new))
                             .thenApplyAsync(v -> {
                                 // 检测重复分配并清理
@@ -502,7 +504,6 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                 }, exec);
     }
 
-
     /**
      * ZooKeeper 事件处理器
      * 
@@ -511,10 +512,13 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * 
      * @param e ZooKeeper事件
      */
-    @Override public void process(WatchedEvent e) {
-        if (stopped.get()) return;
+    @Override
+    public void process(WatchedEvent e) {
+        if (stopped.get())
+            return;
         if (e.getState() == Event.KeeperState.Expired) {
-            exec.submit(() -> {/* 等 SyncConnected 再refresh */});
+            exec.submit(() -> {
+                /* 等 SyncConnected 再refresh */});
             return;
         }
         if (e.getType() == Event.EventType.None && e.getState() == Event.KeeperState.SyncConnected) {
@@ -532,7 +536,8 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * 优雅关闭：停止补偿任务，关闭线程池，释放资源。
      * 确保所有正在进行的操作能够正常完成。
      */
-    @Override public void close() {
+    @Override
+    public void close() {
         if (stopped.compareAndSet(false, true)) {
             if (compensationTask != null) {
                 compensationTask.cancel(false);
