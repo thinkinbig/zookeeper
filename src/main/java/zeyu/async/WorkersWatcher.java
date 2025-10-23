@@ -32,11 +32,14 @@ import java.util.logging.Logger;
 public class WorkersWatcher implements Watcher, AutoCloseable {
 
     /** 对应某一时刻 /workers 的“真实全集” + 便于快速短路的 cversion + 取快照时间 */
-    public record Snapshot(Set<String> children, int cversion, Instant ts) {}
-    /** 相对上一帧的增量（added/removed），并携带当前帧的 snapshot */
-    public record Diff(Snapshot snapshot, Set<String> added, Set<String> removed) {}
+    public record Snapshot(Set<String> children, int cversion, Instant ts) {
+    }
 
-    private final String path;      // 例如：/workers
+    /** 相对上一帧的增量（added/removed），并携带当前帧的 snapshot */
+    public record Diff(Snapshot snapshot, Set<String> added, Set<String> removed) {
+    }
+
+    private final String path; // 例如：/workers
     private final ZkFutures zf;
 
     /** 单线程执行器：把所有推进投递到这条队列，保证串行语义与可预期顺序 */
@@ -48,8 +51,8 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
 
     private static final Logger LOG = Logger.getLogger(WorkersWatcher.class.getName());
 
-    private static final ZkFutures.ChildrenSnapshot EMPTY_CHILDREN_SNAPSHOT =
-            new ZkFutures.ChildrenSnapshot(java.util.Collections.emptyList(), null);
+    private static final ZkFutures.ChildrenSnapshot EMPTY_CHILDREN_SNAPSHOT = new ZkFutures.ChildrenSnapshot(
+            java.util.Collections.emptyList(), null);
 
     /** 最近一次成功获取的快照；用于计算增量（初始为空集） */
     private Snapshot last = new Snapshot(Set.of(), -1, Instant.EPOCH);
@@ -64,8 +67,8 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
     private final AtomicBoolean stopped = new AtomicBoolean(false);
 
     public WorkersWatcher(String path, ZkFutures zf,
-                          BiConsumer<Snapshot, Diff> onChanged,
-                          Consumer<Event.KeeperState> onExpired) {
+            BiConsumer<Snapshot, Diff> onChanged,
+            Consumer<Event.KeeperState> onExpired) {
         this.path = path;
         this.zf = zf;
         this.onChanged = onChanged;
@@ -73,12 +76,11 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
     }
 
     public WorkersWatcher(String path, ZkFutures zf,
-                          BiConsumer<Snapshot, Diff> onChanged) {
+            BiConsumer<Snapshot, Diff> onChanged) {
         this.path = path;
         this.zf = zf;
         this.onChanged = onChanged;
     }
-
 
     /** 启动：读取一次“事实快照”并挂上“一次性 watch”；后续靠事件或自愈再次进入 */
     public CompletableFuture<Void> start() {
@@ -87,18 +89,22 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
 
     /**
      * 统一入口（自愈/刷新）：
-     * - 调用 zf.getChildren(path, this) 获取当前全集，并为“下一次变化”挂上一次性 watch。
+     * - 确保路径存在后调用 zf.getChildren(path, this) 获取当前全集，并为"下一次变化"挂上一次性 watch。
      * - 构造 Snapshot，基于上一次快照计算增量 Diff。
      * - 始终回调 onChanged（快照版语义：上层随时可拿到当前全集）。
      * - 任意异常走 onFailGoSelfHeal() 回到本入口，重新设表与获取快照。
      */
     private CompletableFuture<Void> refreshWorkers() {
-        if (stopped.get()) { return CompletableFuture.completedFuture(null); }
+        if (stopped.get()) {
+            return CompletableFuture.completedFuture(null);
+        }
 
-        return CompletableFuture.completedFuture(null)
+        return zf.ensurePersistent(path)
                 .thenComposeAsync(v -> zf.getChildrenOrEmpty(path, this), exec)
                 .thenAcceptAsync(op -> {
-                    if (stopped.get()) { return; }
+                    if (stopped.get()) {
+                        return;
+                    }
 
                     // 父路径不存在（NONODE） 时不再触发异常/自愈风暴，而是自然视为“当前 worker 集为空”，首帧也会回调一次，贴合“快照版”语义s
                     var cs = op.orElse(EMPTY_CHILDREN_SNAPSHOT);
@@ -127,7 +133,8 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
      * - 这样保证“再读事实 + 重新设表”，避免失明。
      */
     private CompletableFuture<Void> onFailGoSelfHeal() {
-        if (stopped.get()) return CompletableFuture.completedFuture(null);
+        if (stopped.get())
+            return CompletableFuture.completedFuture(null);
 
         Supplier<CompletableFuture<Void>> op = () -> CompletableFuture.completedFuture(null)
                 .thenComposeAsync(v -> stopped.get() ? CompletableFuture.completedFuture(null)
@@ -139,8 +146,7 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
                 Duration.ofMillis(100),
                 zf.scheduler(),
                 KeeperException.ConnectionLossException.class,
-                KeeperException.OperationTimeoutException.class
-        ).exceptionally(e -> null);
+                KeeperException.OperationTimeoutException.class).exceptionally(e -> null);
     }
 
     /** 从 ZkFutures 的 ChildrenSnapshot 构造不可变快照，并带上获取时间 */
@@ -176,20 +182,25 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
      * Watcher 回调（来自 ZK 事件线程）：
      * - 不做重活，只做分发，把推进投递回 exec 单线程，保证串行与可控顺序。
      * - 处理三类关键事件：
-     *   1) Expired：仅通知上层，等待新会话（SyncConnected）后再 refresh。
-     *   2) None+SyncConnected：重连成功，自检一次（refresh）。
-     *   3) NodeChildrenChanged：子节点变化，刷新快照并重新挂表（refresh）。
+     * 1) Expired：仅通知上层，等待新会话（SyncConnected）后再 refresh。
+     * 2) None+SyncConnected：重连成功，自检一次（refresh）。
+     * 3) NodeChildrenChanged：子节点变化，刷新快照并重新挂表（refresh）。
      */
     @Override
     public void process(WatchedEvent watchedEvent) {
-        if (stopped.get()) { return; }
+        if (stopped.get()) {
+            return;
+        }
 
         if (watchedEvent.getState() == Event.KeeperState.Expired) {
             exec.submit(() -> {
                 LOG.warning("WorkersWatcher: session expired; will re-arm after reconnect");
                 if (onExpired != null) {
-                    try { onExpired.accept(watchedEvent.getState()); }
-                    catch (Throwable t) { LOG.warning("onExpired threw: " + t); }
+                    try {
+                        onExpired.accept(watchedEvent.getState());
+                    } catch (Throwable t) {
+                        LOG.warning("onExpired threw: " + t);
+                    }
                 }
                 // 注意：不立即 refresh，等新会话建立（None+SyncConnected）后再进入
             });
