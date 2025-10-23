@@ -73,6 +73,9 @@ public class TasksAssigner implements Watcher, AutoCloseable {
 
     /** Worker选择策略：根据任务数据选择最适合的worker，无可用时返回null */
     private final Function<byte[], String> pickWorker;
+    
+    /** Fencing 令牌：用于防止旧会话回魂 */
+    private final long fencingToken;
 
     /**
      * 构造函数
@@ -90,6 +93,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
         this.claimsPath = claimsPath;
         this.assignPath = assignPath;
         this.pickWorker = pickWorker;
+        this.fencingToken = System.currentTimeMillis() + ThreadLocalRandom.current().nextLong(1000);
     }
 
     /**
@@ -177,12 +181,14 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      */
     private CompletableFuture<Void> claimThenAssign(String taskId) {
         if (stopped.get()) return CompletableFuture.completedFuture(null);
-        byte[] me = new byte[0]; // 可写入 serverId / ts / fencing
+        
+        // 创建 fencing 数据：包含时间戳和随机数，防止旧会话回魂
+        byte[] fencingData = createFencingData();
         String claimZ = claimsPath + "/" + taskId;
         String taskZ  = tasksPath  + "/" + taskId;
 
         return CompletableFuture.completedFuture(null)
-                .thenComposeAsync(v -> zf.createEphemeral(claimZ, me, ZooDefs.Ids.OPEN_ACL_UNSAFE), exec)
+                .thenComposeAsync(v -> zf.createEphemeral(claimZ, fencingData, ZooDefs.Ids.OPEN_ACL_UNSAFE), exec)
                 .thenComposeAsync(v -> zf.getData(taskZ, this), exec)
                 .thenComposeAsync(dr -> {
                     String worker = pickWorker.apply(dr.data());
@@ -273,6 +279,44 @@ public class TasksAssigner implements Watcher, AutoCloseable {
 
 
     /**
+     * 创建 Fencing 数据
+     * 
+     * 生成包含时间戳和随机数的 fencing 数据，用于防止旧会话回魂。
+     * 格式：timestamp:random:fencingToken
+     * 
+     * @return fencing 数据字节数组
+     */
+    private byte[] createFencingData() {
+        long timestamp = System.currentTimeMillis();
+        long random = ThreadLocalRandom.current().nextLong();
+        String fencingString = String.format("%d:%d:%d", timestamp, random, fencingToken);
+        return fencingString.getBytes();
+    }
+
+    /**
+     * 验证 Fencing 数据
+     * 
+     * 检查认领数据是否来自当前会话，防止旧会话回魂。
+     * 
+     * @param data 认领数据
+     * @return true 如果是当前会话的数据
+     */
+    private boolean isValidFencingData(byte[] data) {
+        if (data == null || data.length == 0) return false;
+        
+        try {
+            String fencingString = new String(data);
+            String[] parts = fencingString.split(":");
+            if (parts.length != 3) return false;
+            
+            long token = Long.parseLong(parts[2]);
+            return token == fencingToken;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * 安全释放认领
      * 
      * 使用重试机制安全删除认领节点，避免认领泄露。
@@ -343,7 +387,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                         String claimZ = claimsPath + "/" + claimId;
                         String taskZ = tasksPath + "/" + claimId;
                         
-                        // 检查对应的 task 是否存在
+                        // 检查对应的 task 是否存在，并验证 fencing 数据
                         cleanupTasks.add(
                             zf.exists(taskZ, null)
                                 .thenComposeAsync(taskExists -> {
@@ -353,6 +397,19 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                                                 .exceptionally(e -> null);
                                     }
                                     return CompletableFuture.completedFuture(null);
+                                }, exec)
+                                .thenComposeAsync(v -> {
+                                    // 验证 fencing 数据，清理旧会话的认领
+                                    return zf.getData(claimZ, null)
+                                            .thenComposeAsync(data -> {
+                                                if (!isValidFencingData(data.data())) {
+                                                    // 旧会话的认领，删除
+                                                    return zf.delete(claimZ, -1)
+                                                            .exceptionally(e -> null);
+                                                }
+                                                return CompletableFuture.completedFuture(null);
+                                            }, exec)
+                                            .exceptionally(e -> null);
                                 }, exec)
                         );
                     }
