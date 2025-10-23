@@ -3,9 +3,11 @@ package zeyu.async;
 import org.apache.zookeeper.*;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -133,12 +135,22 @@ public class LeaderElector implements Watcher, AutoCloseable {
      * 自愈路径：
      * - 任何异常都切回 exec 再进 checkThenDecide()，保证“再看事实 + 重新设表”；
      * - stopped 时短路返回。
-     * - 可选：这里可以加 50~200ms 随机退避，避免全体同时轰击 ZK（工程化建议）。
      */
     private CompletableFuture<Void> onFailGoSelfHeal() {
         if (stopped.get()) return CompletableFuture.completedFuture(null);
-        return CompletableFuture.supplyAsync(() -> null, exec)
-                .thenCompose(v -> checkThenDecide());
+
+        Supplier<CompletableFuture<Void>> op = () ->
+                CompletableFuture.completedFuture(null)
+                        .thenComposeAsync(v -> checkThenDecide(), exec);
+
+        return ZkFutures.retryAsync(
+                op,
+                3,
+                Duration.ofMillis(100),
+                zf.scheduler(),
+                KeeperException.ConnectionLossException.class,
+                KeeperException.OperationTimeoutException.class
+        ).exceptionally(e -> null);
     }
 
     /**

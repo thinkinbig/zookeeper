@@ -1,8 +1,10 @@
 package zeyu.async;
 
+import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.Set;
@@ -12,6 +14,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -60,11 +63,22 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
     /** 关闭标志：确保关闭后不再推进、不中断退出过程 */
     private final AtomicBoolean stopped = new AtomicBoolean(false);
 
-    public WorkersWatcher(String path, ZkFutures zf, BiConsumer<Snapshot, Diff> onChanged) {
+    public WorkersWatcher(String path, ZkFutures zf,
+                          BiConsumer<Snapshot, Diff> onChanged,
+                          Consumer<Event.KeeperState> onExpired) {
+        this.path = path;
+        this.zf = zf;
+        this.onChanged = onChanged;
+        this.onExpired = onExpired;
+    }
+
+    public WorkersWatcher(String path, ZkFutures zf,
+                          BiConsumer<Snapshot, Diff> onChanged) {
         this.path = path;
         this.zf = zf;
         this.onChanged = onChanged;
     }
+
 
     /** 启动：读取一次“事实快照”并挂上“一次性 watch”；后续靠事件或自愈再次进入 */
     public CompletableFuture<Void> start() {
@@ -81,7 +95,8 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
     private CompletableFuture<Void> refreshWorkers() {
         if (stopped.get()) { return CompletableFuture.completedFuture(null); }
 
-        return zf.getChildrenOrEmpty(path, this)
+        return CompletableFuture.completedFuture(null)
+                .thenComposeAsync(v -> zf.getChildrenOrEmpty(path, this), exec)
                 .thenAcceptAsync(op -> {
                     if (stopped.get()) { return; }
 
@@ -113,9 +128,19 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
      */
     private CompletableFuture<Void> onFailGoSelfHeal() {
         if (stopped.get()) return CompletableFuture.completedFuture(null);
-        return CompletableFuture.supplyAsync(() -> null, exec)
-                .thenCompose(v -> stopped.get() ? CompletableFuture.completedFuture(null)
-                        : refreshWorkers());
+
+        Supplier<CompletableFuture<Void>> op = () -> CompletableFuture.completedFuture(null)
+                .thenComposeAsync(v -> stopped.get() ? CompletableFuture.completedFuture(null)
+                        : refreshWorkers(), exec);
+
+        return ZkFutures.retryAsync(
+                op,
+                3,
+                Duration.ofMillis(100),
+                zf.scheduler(),
+                KeeperException.ConnectionLossException.class,
+                KeeperException.OperationTimeoutException.class
+        ).exceptionally(e -> null);
     }
 
     /** 从 ZkFutures 的 ChildrenSnapshot 构造不可变快照，并带上获取时间 */
