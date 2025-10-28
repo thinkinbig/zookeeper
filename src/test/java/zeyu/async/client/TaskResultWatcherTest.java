@@ -37,7 +37,6 @@ class TaskResultWatcherTest {
     @BeforeEach
     void setUp() {
         scheduler = Executors.newSingleThreadScheduledExecutor();
-        lenient().when(zf.scheduler()).thenReturn(scheduler);
         watcher = new TaskResultWatcher(zf, "/status");
     }
 

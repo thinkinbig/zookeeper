@@ -4,6 +4,8 @@ import org.apache.zookeeper.KeeperException;
 
 import zeyu.async.common.LeaderElector;
 import zeyu.async.common.ZkFutures;
+import zeyu.async.common.ZkFuturesDecorator;
+import zeyu.async.common.ZkFuturesPolicies;
 
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
@@ -36,15 +38,21 @@ public class DemoMain {
                     return t;
                 }))) {
             ScheduledExecutorService scheduler = cs.sch;
-            ZkFutures zf = new ZkFutures(connect, 10_000, event -> {
-            }, scheduler);
-            LeaderElector elector = new LeaderElector(zf, id,
-                    p -> System.out.println("Leader elected:" + p));
-            CompletableFuture<Void> started = ZkFutures.withTimeout(
-                    ZkFutures.retryAsync(elector::start, 5, Duration.ofMillis(200), scheduler,
-                            KeeperException.ConnectionLossException.class,
-                            KeeperException.OperationTimeoutException.class),
-                    Duration.ofSeconds(30), scheduler);
+            try (ZkFutures zfBase = new ZkFutures(connect, 10_000, event -> {})) {
+                // Create retry and timeout policies
+                ZkFuturesPolicies.RetryPolicy retryPolicy = new ZkFuturesPolicies.RetryPolicy(5, Duration.ofMillis(200),
+                        KeeperException.ConnectionLossException.class, KeeperException.OperationTimeoutException.class);
+                ZkFuturesPolicies.TimeoutPolicy timeoutPolicy = new ZkFuturesPolicies.TimeoutPolicy(Duration.ofSeconds(30), scheduler);
+                ZkFuturesPolicies policies = ZkFuturesPolicies.builder()
+                        .retry(retryPolicy, scheduler)
+                        .timeout(timeoutPolicy)
+                        .build();
+                
+                try (ZkFuturesDecorator zf = new ZkFuturesDecorator(zfBase, policies);
+                     LeaderElector elector = new LeaderElector(zfBase, id,
+                        p -> System.out.println("Leader elected:" + p))) {
+                    CompletableFuture<Void> started = timeoutPolicy.withTimeout(
+                            retryPolicy.retryAsync(elector::start, scheduler));
 
             started.whenComplete((ok, err) -> {
                 if (err != null) {
@@ -54,7 +62,9 @@ public class DemoMain {
                 }
             });
 
-            Thread.currentThread().join();
+                    Thread.currentThread().join();
+                }
+            }
         }
 
     }

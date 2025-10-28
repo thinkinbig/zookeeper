@@ -51,8 +51,6 @@ class WorkersWatcherTest {
             lastDiff.set(diff);
             changeLatch.countDown();
         });
-        
-        when(zf.scheduler()).thenReturn(scheduler);
     }
 
     @Test

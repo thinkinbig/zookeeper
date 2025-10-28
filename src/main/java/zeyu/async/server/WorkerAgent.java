@@ -166,25 +166,52 @@ public class WorkerAgent implements Watcher, AutoCloseable {
 
         return zf.getData(taskPath, null)
                 .thenComposeAsync(data -> {
-                    try {
-                        // 调用任务处理回调，传递完整的NodeData
-                        taskHandler.accept(data);
+                    // 校验分配里的 fencing token（若存在）与当前 /master 的 czxid 一致或最新
+                    return zf.exists("/master", null).thenComposeAsync(masterOpt -> {
+                        long current = masterOpt.map(s -> s.getCzxid()).orElse(-1L);
+                        byte[] raw = data.data();
+                        String prefix = "token:";
+                        int nl = -1;
+                        if (raw.length > prefix.length()) {
+                            // 简单解析 header: token:<czxid>\n...
+                            String head = new String(raw, 0, Math.min(raw.length, 64));
+                            if (head.startsWith(prefix) && (nl = head.indexOf('\n')) > 0) {
+                                try {
+                                    long tok = Long.parseLong(head.substring(prefix.length(), nl));
+                                    if (current >= 0 && tok < current) {
+                                        // 过期任务：直接丢弃并删除分配
+                                        return zf.delete(taskPath, -1).exceptionally(e -> null).thenApply(v -> null);
+                                    }
+                                } catch (NumberFormatException ignore) {
+                                }
+                            }
+                        }
 
-                        // 写入结果状态后删除任务节点
-                        String statusZ = statusPath + "/" + taskId;
-                        byte[] ok = "OK".getBytes();
-                        return upsertStatus(statusZ, ok)
-                                .thenComposeAsync(v -> zf.delete(taskPath, -1), exec);
-                    } catch (Exception e) {
-                        // 处理异常，记录日志但不影响其他任务
-                        System.err.println("Task processing failed for " + taskId + ": " + e.getMessage());
-                        String statusZ = statusPath + "/" + taskId;
-                        byte[] err = ("ERR:" + e.getMessage()).getBytes();
-                        return upsertStatus(statusZ, err)
-                                .exceptionally(ex -> null)
-                                .thenComposeAsync(v -> zf.delete(taskPath, -1).exceptionally(ex -> null), exec)
-                                .thenApply(x -> null);
-                    }
+                        // 去掉 header 后的真实任务数据传给处理回调
+                        ZkFutures.NodeData effective = data;
+                        if (nl > 0) {
+                            int headerLen = nl + 1; // 包含换行
+                            byte[] body = new byte[raw.length - headerLen];
+                            System.arraycopy(raw, headerLen, body, 0, body.length);
+                            effective = new ZkFutures.NodeData(body, data.stat());
+                        }
+
+                        try {
+                            taskHandler.accept(effective);
+                            String statusZ = statusPath + "/" + taskId;
+                            byte[] ok = "OK".getBytes();
+                            return upsertStatus(statusZ, ok)
+                                    .thenComposeAsync(v -> zf.delete(taskPath, -1), exec);
+                        } catch (Exception e) {
+                            System.err.println("Task processing failed for " + taskId + ": " + e.getMessage());
+                            String statusZ = statusPath + "/" + taskId;
+                            byte[] err = ("ERR:" + e.getMessage()).getBytes();
+                            return upsertStatus(statusZ, err)
+                                    .exceptionally(ex -> null)
+                                    .thenComposeAsync(v -> zf.delete(taskPath, -1).exceptionally(ex -> null), exec)
+                                    .thenApply(x -> null);
+                        }
+                    }, exec);
                 }, exec)
                 .exceptionally(ex -> {
                     // 删除失败也记录日志，但不影响其他任务

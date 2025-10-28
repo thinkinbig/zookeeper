@@ -2,13 +2,11 @@ package zeyu.async.client;
 
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
-import org.apache.zookeeper.KeeperException.ConnectionLossException;
-import org.apache.zookeeper.KeeperException.OperationTimeoutException;
 
 import zeyu.async.common.ZkFutures;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
+ 
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
@@ -101,25 +99,13 @@ public class TaskResultWatcher implements Watcher, AutoCloseable {
         CompletableFuture<Optional<String>> sink = pending.future();
         if (sink.isDone()) return;
 
-        ZkFutures.retryAsync(
-                () -> zf.exists(path, this),
-                3,
-                Duration.ofMillis(100),
-                zf.scheduler(),
-                ConnectionLossException.class,
-                OperationTimeoutException.class)
+        zf.exists(path, this)
                 .thenComposeAsync(opt -> {
                     if (stopped.get() || sink.isDone()) return CompletableFuture.completedFuture(null);
                     if (opt.isEmpty()) {
                         return CompletableFuture.completedFuture(null);
                     }
-                    return ZkFutures.retryAsync(
-                            () -> zf.getData(path, this),
-                            3,
-                            Duration.ofMillis(100),
-                            zf.scheduler(),
-                            ConnectionLossException.class,
-                            OperationTimeoutException.class)
+                    return zf.getData(path, this)
                             .thenAcceptAsync(nd -> {
                                 if (!sink.isDone()) {
                                     var cb = pending.onUpdate();

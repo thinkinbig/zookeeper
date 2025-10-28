@@ -42,8 +42,6 @@ class LeaderElectorTest {
             t.setDaemon(true);
             return t;
         });
-        
-        String connectString = zookeeper.getHost() + ":" + zookeeper.getMappedPort(2181);
     }
 
     @AfterEach
@@ -59,7 +57,7 @@ class LeaderElectorTest {
         CountDownLatch electedLatch = new CountDownLatch(1);
 
         String connectString = zookeeper.getHost() + ":" + zookeeper.getMappedPort(2181);
-        ZkFutures zf = new ZkFutures(connectString, 10000, event -> {}, scheduler);
+        ZkFutures zf = new ZkFutures(connectString, 10000, event -> {});
         elector1 = new LeaderElector(zf, "server1", leader -> {
                 electedLeader.set(leader);
                 electedLatch.countDown();
@@ -85,8 +83,8 @@ class LeaderElectorTest {
 
         // 独立会话的两个 elector
         String connectString = zookeeper.getHost() + ":" + zookeeper.getMappedPort(2181);
-        ZkFutures zf1 = new ZkFutures(connectString, 10000, e -> {}, scheduler);
-        ZkFutures zf2 = new ZkFutures(connectString, 10000, e -> {}, scheduler);
+        ZkFutures zf1 = new ZkFutures(connectString, 10000, e -> {});
+        ZkFutures zf2 = new ZkFutures(connectString, 10000, e -> {});
         try {
             elector1 = new LeaderElector(zf1, "server1", leader -> {
                 electedLeader1.set(leader);
@@ -130,8 +128,8 @@ class LeaderElectorTest {
 
         // use separate ZooKeeper sessions per elector
         String connectString = zookeeper.getHost() + ":" + zookeeper.getMappedPort(2181);
-        ZkFutures zf1 = new ZkFutures(connectString, 10000, e -> {}, scheduler);
-        ZkFutures zf2 = new ZkFutures(connectString, 10000, e -> {}, scheduler);
+        ZkFutures zf1 = new ZkFutures(connectString, 10000, e -> {});
+        ZkFutures zf2 = new ZkFutures(connectString, 10000, e -> {});
 
         elector1 = new LeaderElector(zf1, "server1", leader -> {
             electedLeader.set(leader);
@@ -166,9 +164,8 @@ class LeaderElectorTest {
         CountDownLatch electedLatch = new CountDownLatch(1);
 
         String connectString = zookeeper.getHost() + ":" + zookeeper.getMappedPort(2181);
-        try (ZkFutures zf1 = new ZkFutures(connectString, 10000, event -> {
-        }, scheduler); ZkFutures zf2 = new ZkFutures(connectString, 10000, event -> {
-        }, scheduler)) {
+        try (ZkFutures zf1 = new ZkFutures(connectString, 10000, event -> {});
+             ZkFutures zf2 = new ZkFutures(connectString, 10000, event -> {})) {
             // 不 countDown，等待 server2 当选
             elector1 = new LeaderElector(zf1, "server1", electedLeader::set);
 

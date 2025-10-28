@@ -6,15 +6,14 @@ import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooDefs;
 
 import zeyu.async.common.ZkFutures;
-
-import java.time.Duration;
+ 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
-import java.util.function.Supplier;
+ 
 
 /**
  * TasksAssigner - 任务分配器
@@ -166,15 +165,9 @@ public class TasksAssigner implements Watcher, AutoCloseable {
     private CompletableFuture<Void> onFailGoSelfHeal() {
         if (stopped.get())
             return CompletableFuture.completedFuture(null);
-        Supplier<CompletableFuture<Void>> op = () -> CompletableFuture.completedFuture(null)
-                .thenComposeAsync(v -> stopped.get() ? CompletableFuture.completedFuture(null) : refreshTasks(), exec);
-        return ZkFutures.retryAsync(
-                op,
-                3,
-                Duration.ofMillis(100),
-                zf.scheduler(),
-                KeeperException.ConnectionLossException.class,
-                KeeperException.OperationTimeoutException.class).exceptionally(e -> null);
+        return CompletableFuture.completedFuture(null)
+                .thenComposeAsync(v -> stopped.get() ? CompletableFuture.completedFuture(null) : refreshTasks(), exec)
+                .exceptionally(e -> null);
     }
 
     /**
@@ -203,17 +196,30 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                     }
                     String assignZ = assignPath + "/" + worker + "/" + taskId;
 
-                    // 根据 ZkFutures 的 multi 设置选择策略
-                    if (zf.isMultiEnabled()) {
-                        return tryAtomicAssignment(assignZ, dr.data(), taskZ, claimZ)
-                                .exceptionallyCompose(ex -> {
-                                    // multi 失败时 fallback 到非原子操作
-                                    return fallbackNonAtomicAssignment(assignZ, dr.data(), taskZ, claimZ);
-                                });
-                    } else {
-                        // 直接使用非原子操作
-                        return fallbackNonAtomicAssignment(assignZ, dr.data(), taskZ, claimZ);
-                    }
+                    // 读取当前 leader 的 czxid 作为 fencing token，并附到分配数据
+                    return zf.exists("/master", null)
+                            .thenComposeAsync(masterOpt -> {
+                                long token = masterOpt.map(s -> s.getCzxid()).orElse(-1L);
+                                byte[] src = dr.data();
+                                byte[] payload;
+                                if (token >= 0) {
+                                    byte[] header = ("token:" + token + "\n").getBytes();
+                                    payload = new byte[header.length + src.length];
+                                    System.arraycopy(header, 0, payload, 0, header.length);
+                                    System.arraycopy(src, 0, payload, header.length, src.length);
+                                } else {
+                                    payload = src;
+                                }
+
+                                // 根据 ZkFutures 的 multi 设置选择策略
+                                if (zf.isMultiEnabled()) {
+                                    return tryAtomicAssignment(assignZ, payload, taskZ, claimZ)
+                                            .exceptionallyCompose(ex -> fallbackNonAtomicAssignment(assignZ, payload, taskZ, claimZ));
+                                } else {
+                                    // 直接使用非原子操作
+                                    return fallbackNonAtomicAssignment(assignZ, payload, taskZ, claimZ);
+                                }
+                            }, exec);
                 }, exec)
                 .exceptionallyCompose(ex -> {
                     // 失败路径：尽量把 claim 删掉（防泄露）
@@ -292,14 +298,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * @return 释放完成的Future
      */
     private CompletableFuture<Void> safeReleaseClaim(String claimZ) {
-        Supplier<CompletableFuture<Void>> op = () -> zf.delete(claimZ, -1);
-        return ZkFutures.retryAsync(
-                op,
-                3, // 尝试次数
-                Duration.ofMillis(100), // 退避
-                zf.scheduler(),
-                KeeperException.ConnectionLossException.class,
-                KeeperException.OperationTimeoutException.class).exceptionally(e -> {
+        return zf.delete(claimZ, -1).exceptionally(e -> {
                     // NoNode 当成功；其他错误打点后吞掉，避免卡链
                     Throwable t = ZkFutures.unwrap(e);
                     if (t instanceof KeeperException.NoNodeException)
@@ -314,7 +313,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * 最终一致性保证机制：定期检测和修复各种不一致状态。
      * 包括孤儿claims清理、孤儿tasks重新分配、重复分配检测等。
      */
-    void runCompensation() {
+    public void runCompensation() {
         if (stopped.get())
             return;
 

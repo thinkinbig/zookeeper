@@ -1,13 +1,11 @@
 package zeyu.async.common;
 
 import org.apache.zookeeper.*;
-
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
+ 
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -53,20 +51,35 @@ public class LeaderElector implements Watcher, AutoCloseable {
     /** 会话过期回调（可选）：仅通知；真正重连后由 SyncConnected 分支触发自愈 */
     private Consumer<Event.KeeperState> onExpired;
 
+    /** 是否在回调结束后主动让出领导并自动排队（类似 Curator LeaderSelector 的轮值领导） */
+    private final boolean autoRequeue;
+
+    /** 当前 fencing token（当选时更新） */
+    private volatile long currentFencingToken = -1L;
+
+    /** 当选次数计数器 */
+    private volatile int electedCount = 0;
+
     public LeaderElector(ZkFutures zf, String serverId,
             Consumer<String> onElected,
             Consumer<Event.KeeperState> onExpired) {
-        this.zf = zf;
-        this.serverId = serverId;
-        this.onElected = onElected;
-        this.onExpired = onExpired;
+        this(zf, serverId, onElected, onExpired, false);
     }
 
     public LeaderElector(ZkFutures zf, String serverId,
             Consumer<String> onElected) {
+        this(zf, serverId, onElected, null, false);
+    }
+
+    public LeaderElector(ZkFutures zf, String serverId,
+            Consumer<String> onElected,
+            Consumer<Event.KeeperState> onExpired,
+            boolean autoRequeue) {
         this.zf = zf;
         this.serverId = serverId;
         this.onElected = onElected;
+        this.onExpired = onExpired;
+        this.autoRequeue = autoRequeue;
     }
 
     /** 启动：永远从“自检入口”开始（幂等） */
@@ -107,19 +120,58 @@ public class LeaderElector implements Watcher, AutoCloseable {
             return CompletableFuture.completedFuture(null);
         byte[] data = serverId.getBytes(StandardCharsets.UTF_8);
         return zf.createEphemeral(MASTER, data, ZooDefs.Ids.OPEN_ACL_UNSAFE)
-                .thenRunAsync(() -> {
-                    try {
-                        onElected.accept(serverId);
-                    } catch (Throwable t) {
-                        LOG.log(Level.WARNING, "onChanged threw", t);
+                .thenComposeAsync(v -> zf.exists(MASTER, null)
+                        .thenAccept(opt -> {
+                            if (opt.isPresent()) {
+                                currentFencingToken = opt.get().getCzxid();
+                                electedCount++;
+                                LOG.log(Level.INFO, "Elected. fencing token(czxid): {0}, elected count: {1}",
+                                        new Object[]{currentFencingToken, electedCount});
+                            }
+                            try {
+                                onElected.accept(serverId);
+                            } catch (Throwable t) {
+                                LOG.log(Level.WARNING, "onChanged threw", t);
+                            }
+                        })
+                , exec)
+                .thenComposeAsync(v -> {
+                    if (stopped.get()) {
+                        return CompletableFuture.completedFuture(null);
                     }
+                    if (autoRequeue) {
+                        // 轮值：主动让出领导并重新进入监听/竞争流程
+                        return zf.delete(MASTER, -1)
+                                .exceptionally(e -> null) // 若已被删，忽略
+                                .thenCompose(x -> checkThenDecide());
+                    }
+                    // 持有领导：不再推进
+                    return CompletableFuture.completedFuture(null);
                 }, exec)
                 .exceptionallyCompose(ex -> onFailGoSelfHeal());
     }
 
+    
+
+    /**
+     * 获取当前 fencing token
+     * @return 当前 fencing token，如果未当选则返回 -1
+     */
+    public long getCurrentFencingToken() {
+        return currentFencingToken;
+    }
+
+    /**
+     * 获取当选次数
+     * @return 当选次数
+     */
+    public int getElectedCount() {
+        return electedCount;
+    }
+
     /**
      * 监听当前 leader：
-     * - 用 exists(MASTER, this) 对 master 节点挂“一次性 watch”（NodeDeleted）；
+     * - 用 exists(MASTER, this) 对 master 节点挂"一次性 watch"（NodeDeleted）；
      * - 如果竞态下节点已不存在（opt.empty），立即回到统一入口（checkThenDecide）抢主；
      * - 如果存在，则只设表不推进：等待 NodeDeleted 事件到来。
      */
@@ -150,16 +202,9 @@ public class LeaderElector implements Watcher, AutoCloseable {
         if (stopped.get())
             return CompletableFuture.completedFuture(null);
 
-        Supplier<CompletableFuture<Void>> op = () -> CompletableFuture.completedFuture(null)
-                .thenComposeAsync(v -> checkThenDecide(), exec);
-
-        return ZkFutures.retryAsync(
-                op,
-                3,
-                Duration.ofMillis(100),
-                zf.scheduler(),
-                KeeperException.ConnectionLossException.class,
-                KeeperException.OperationTimeoutException.class).exceptionally(e -> null);
+        return CompletableFuture.completedFuture(null)
+                .thenComposeAsync(v -> checkThenDecide(), exec)
+                .exceptionally(e -> null);
     }
 
     /**
