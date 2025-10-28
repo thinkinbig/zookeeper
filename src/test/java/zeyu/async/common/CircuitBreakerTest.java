@@ -23,10 +23,11 @@ class CircuitBreakerTest {
 
     @BeforeEach
     void setUp() {
-        circuitBreaker = new CircuitBreaker();
-        circuitBreaker.setFailureThreshold(2);
-        circuitBreaker.setOpenSleepWindowMs(1000);
-        circuitBreaker.setHalfOpenMaxInFlight(1);
+        circuitBreaker = CircuitBreaker.builder()
+                .failureThreshold(2)
+                .openSleepWindowMs(1000)
+                .halfOpenMaxInFlight(1)
+                .build();
         scheduler = Executors.newScheduledThreadPool(2);
     }
 

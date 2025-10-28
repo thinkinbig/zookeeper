@@ -11,7 +11,11 @@ import java.util.function.Supplier;
  * A lightweight, standalone circuit breaker that can wrap arbitrary async operations.
  *
  * Usage:
- *   CircuitBreaker cb = new CircuitBreaker();
+ *   CircuitBreaker cb = CircuitBreaker.builder()
+ *       .failureThreshold(3)
+ *       .openSleepWindowMs(5000)
+ *       .halfOpenMaxInFlight(2)
+ *       .build();
  *   cb.execute(() -> zf.getData(path, null));
  *
  * Not wired into ZkFutures by default; callers compose explicitly, similar to retry.
@@ -125,6 +129,51 @@ public class CircuitBreaker {
                 }
             }
         }, Math.max(1, openSleepWindowMs), TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Builder for CircuitBreaker configuration.
+     * Usage:
+     *   CircuitBreaker cb = CircuitBreaker.builder()
+     *       .failureThreshold(3)
+     *       .openSleepWindowMs(5000)
+     *       .halfOpenMaxInFlight(2)
+     *       .build();
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static class Builder {
+        private int failureThreshold = 5;
+        private long openSleepWindowMs = 2_000;
+        private int halfOpenMaxInFlight = 1;
+
+        public Builder failureThreshold(int failureThreshold) {
+            if (failureThreshold <= 0) throw new IllegalArgumentException("failureThreshold > 0");
+            this.failureThreshold = failureThreshold;
+            return this;
+        }
+
+        public Builder openSleepWindowMs(long openSleepWindowMs) {
+            if (openSleepWindowMs < 0) throw new IllegalArgumentException("openSleepWindowMs >= 0");
+            this.openSleepWindowMs = openSleepWindowMs;
+            return this;
+        }
+
+        public Builder halfOpenMaxInFlight(int halfOpenMaxInFlight) {
+            if (halfOpenMaxInFlight <= 0) throw new IllegalArgumentException("halfOpenMaxInFlight > 0");
+            this.halfOpenMaxInFlight = halfOpenMaxInFlight;
+            return this;
+        }
+
+        public CircuitBreaker build() {
+            CircuitBreaker cb = new CircuitBreaker();
+            cb.setFailureThreshold(failureThreshold);
+            cb.setOpenSleepWindowMs(openSleepWindowMs);
+            cb.setHalfOpenMaxInFlight(halfOpenMaxInFlight);
+            return cb;
+        }
     }
 }
 

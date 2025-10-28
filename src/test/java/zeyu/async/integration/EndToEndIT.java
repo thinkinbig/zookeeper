@@ -78,10 +78,11 @@ class EndToEndIT {
         ZkFutures zfWorkerBase = new ZkFutures(connect, 8_000, e -> {}, multiEnabled);
         
         // Create policies with circuit breaker and retry
-        CircuitBreaker cb = new CircuitBreaker();
-        cb.setFailureThreshold(3);
-        cb.setOpenSleepWindowMs(5000);
-        cb.setHalfOpenMaxInFlight(2);
+        CircuitBreaker cb = CircuitBreaker.builder()
+                .failureThreshold(3)
+                .openSleepWindowMs(5000)
+                .halfOpenMaxInFlight(2)
+                .build();
         
         ZkFuturesPolicies.RetryPolicy retryPolicy = new ZkFuturesPolicies.RetryPolicy(3, Duration.ofMillis(200), 
                 KeeperException.ConnectionLossException.class, KeeperException.OperationTimeoutException.class);
@@ -182,10 +183,11 @@ class EndToEndIT {
         scheduler = Executors.newScheduledThreadPool(2);
         
         // Create aggressive circuit breaker (fails fast)
-        CircuitBreaker cb = new CircuitBreaker();
-        cb.setFailureThreshold(2);  // Trip after 2 failures
-        cb.setOpenSleepWindowMs(1000); // Short sleep window
-        cb.setHalfOpenMaxInFlight(1);  // Only 1 probe
+        CircuitBreaker cb = CircuitBreaker.builder()
+                .failureThreshold(2)  // Trip after 2 failures
+                .openSleepWindowMs(1000) // Short sleep window
+                .halfOpenMaxInFlight(1)  // Only 1 probe
+                .build();
         
         ZkFuturesPolicies policies = ZkFuturesPolicies.builder()
                 .circuitBreaker(cb)
