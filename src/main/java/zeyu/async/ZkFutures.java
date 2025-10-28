@@ -137,6 +137,12 @@ public class ZkFutures implements AutoCloseable {
         return cf;
     }
 
+    public CompletableFuture<Stat> setData(String path, byte[] data, int version) {
+        CompletableFuture<Stat> cf = new CompletableFuture<>();
+        zk.setData(path, data, version, (rc, p, ctx, stat) -> completeByCode(cf, rc, stat, p), null);
+        return cf;
+    }
+
     public CompletableFuture<List<OpResult>> multi(List<Op> ops) {
         CompletableFuture<List<OpResult>> cf = new CompletableFuture<>();
         zk.multi(ops, (rc, path, ctx, results) -> {

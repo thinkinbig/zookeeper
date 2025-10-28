@@ -58,6 +58,9 @@ public class TasksAssignee implements Watcher, AutoCloseable {
     /** 当前worker的存在性节点，如 "/workers/{workerId}" */
     private final String myPresenceZnode;
 
+    /** 结果状态根路径，如 "/status" */
+    private final String statusPath;
+
     /** 单线程执行器，确保所有任务接收操作串行执行，避免竞态条件 */
     private final ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
         var t = new Thread(r, "tasksAssignee");
@@ -86,12 +89,18 @@ public class TasksAssignee implements Watcher, AutoCloseable {
      */
     public TasksAssignee(ZkFutures zf, String workerId, String workersPath, String assignPath,
             Consumer<ZkFutures.NodeData> taskHandler) {
+        this(zf, workerId, workersPath, assignPath, "/status", taskHandler);
+    }
+
+    public TasksAssignee(ZkFutures zf, String workerId, String workersPath, String assignPath, String statusPath,
+            Consumer<ZkFutures.NodeData> taskHandler) {
         this.zf = zf;
         this.workerId = workerId;
         this.workersPath = workersPath;
         this.taskHandler = taskHandler;
         this.myAssignDir = assignPath + "/" + workerId;
         this.myPresenceZnode = workersPath + "/" + workerId;
+        this.statusPath = statusPath;
     }
 
     /**
@@ -107,6 +116,7 @@ public class TasksAssignee implements Watcher, AutoCloseable {
                 .thenComposeAsync(
                         v -> zf.createEphemeral(myPresenceZnode, workerId.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE),
                         exec)
+                .thenComposeAsync(v -> zf.ensurePersistent(statusPath), exec)
                 .thenComposeAsync(v -> refreshWorkerTasks(), exec);
     }
 
@@ -162,12 +172,20 @@ public class TasksAssignee implements Watcher, AutoCloseable {
                         // 调用任务处理回调，传递完整的NodeData
                         taskHandler.accept(data);
 
-                        // 处理完成后删除任务节点
-                        return zf.delete(taskPath, -1);
+                        // 写入结果状态后删除任务节点
+                        String statusZ = statusPath + "/" + taskId;
+                        byte[] ok = "OK".getBytes();
+                        return upsertStatus(statusZ, ok)
+                                .thenComposeAsync(v -> zf.delete(taskPath, -1), exec);
                     } catch (Exception e) {
                         // 处理异常，记录日志但不影响其他任务
                         System.err.println("Task processing failed for " + taskId + ": " + e.getMessage());
-                        return zf.delete(taskPath, -1).exceptionally(ex -> null);
+                        String statusZ = statusPath + "/" + taskId;
+                        byte[] err = ("ERR:" + e.getMessage()).getBytes();
+                        return upsertStatus(statusZ, err)
+                                .exceptionally(ex -> null)
+                                .thenComposeAsync(v -> zf.delete(taskPath, -1).exceptionally(ex -> null), exec)
+                                .thenApply(x -> null);
                     }
                 }, exec)
                 .exceptionally(ex -> {
@@ -175,6 +193,20 @@ public class TasksAssignee implements Watcher, AutoCloseable {
                     System.err.println("Failed to delete task " + taskId + ": " + ex.getMessage());
                     return null;
                 });
+    }
+
+    private CompletableFuture<Void> upsertStatus(String statusZ, byte[] data) {
+        return zf.setData(statusZ, data, -1)
+                .thenApply(s -> (Void) null)
+                .handle((v, ex) -> {
+                    if (ex == null) {
+                        return CompletableFuture.<Void>completedFuture(null);
+                    }
+                    return zf.createPersistent(statusZ, data, ZooDefs.Ids.OPEN_ACL_UNSAFE)
+                            .thenApply(x -> (Void) null)
+                            .exceptionally(e -> null);
+                })
+                .thenCompose(f -> f);
     }
 
     /**

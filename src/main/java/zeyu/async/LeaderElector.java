@@ -22,7 +22,7 @@ import java.util.logging.Logger;
  *
  * 关键点：
  * 1) 统一入口：checkThenDecide()
- *    - 先 exists(MASTER, null) 查看事实：空 → tryBecomeLeader()；非空 → watchLeader()
+ * - 先 exists(MASTER, null) 查看事实：空 → tryBecomeLeader()；非空 → watchLeader()
  * 2) 一次性 watch：每次 watchLeader() 都用 exists(MASTER, this) 挂下一次 watch（NodeDeleted）
  * 3) 自愈闭环：异常/重连/竞态，一律回到 checkThenDecide() 兜底
  * 4) 回调隔离：onElected/onExpired 在 exec 线程执行并 try/catch，避免业务异常破坏链路
@@ -39,7 +39,9 @@ public class LeaderElector implements Watcher, AutoCloseable {
 
     /** 单线程执行器：所有推进都投递到这里，确保串行（避免并发竞态） */
     private final ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
-        var t = new Thread(r, "election"); t.setDaemon(true); return t;
+        var t = new Thread(r, "election");
+        t.setDaemon(true);
+        return t;
     });
 
     /** 关闭标志：关闭后快速短路所有推进 */
@@ -52,8 +54,8 @@ public class LeaderElector implements Watcher, AutoCloseable {
     private Consumer<Event.KeeperState> onExpired;
 
     public LeaderElector(ZkFutures zf, String serverId,
-                         Consumer<String> onElected,
-                         Consumer<Event.KeeperState> onExpired) {
+            Consumer<String> onElected,
+            Consumer<Event.KeeperState> onExpired) {
         this.zf = zf;
         this.serverId = serverId;
         this.onElected = onElected;
@@ -61,14 +63,16 @@ public class LeaderElector implements Watcher, AutoCloseable {
     }
 
     public LeaderElector(ZkFutures zf, String serverId,
-                         Consumer<String> onElected) {
+            Consumer<String> onElected) {
         this.zf = zf;
         this.serverId = serverId;
         this.onElected = onElected;
     }
 
     /** 启动：永远从“自检入口”开始（幂等） */
-    public CompletableFuture<Void> start() { return checkThenDecide(); }
+    public CompletableFuture<Void> start() {
+        return checkThenDecide();
+    }
 
     /**
      * 统一入口（幂等自愈）：
@@ -78,10 +82,12 @@ public class LeaderElector implements Watcher, AutoCloseable {
      * - 任意异常走 onFailGoSelfHeal() 回到本入口。
      */
     private CompletableFuture<Void> checkThenDecide() {
-        if (stopped.get()) return CompletableFuture.completedFuture(null);
+        if (stopped.get())
+            return CompletableFuture.completedFuture(null);
         return zf.exists(MASTER, null)
                 .thenComposeAsync(opt -> {
-                    if (stopped.get()) return CompletableFuture.completedFuture(null);
+                    if (stopped.get())
+                        return CompletableFuture.completedFuture(null);
                     return (opt.isEmpty()) ? tryBecomeLeader() : watchLeader();
                 }, exec)
                 .exceptionallyCompose(ex -> onFailGoSelfHeal());
@@ -97,7 +103,8 @@ public class LeaderElector implements Watcher, AutoCloseable {
      * - 这里没有做“只触发一次”的幂等护栏；若你担心极端情况下多次回调，可加 AtomicBoolean 控制只触发一次。
      */
     private CompletableFuture<Void> tryBecomeLeader() {
-        if (stopped.get()) return CompletableFuture.completedFuture(null);
+        if (stopped.get())
+            return CompletableFuture.completedFuture(null);
         byte[] data = serverId.getBytes(StandardCharsets.UTF_8);
         return zf.createEphemeral(MASTER, data, ZooDefs.Ids.OPEN_ACL_UNSAFE)
                 .thenRunAsync(() -> {
@@ -105,7 +112,8 @@ public class LeaderElector implements Watcher, AutoCloseable {
                         onElected.accept(serverId);
                     } catch (Throwable t) {
                         LOG.log(Level.WARNING, "onChanged threw", t);
-                    }}, exec)
+                    }
+                }, exec)
                 .exceptionallyCompose(ex -> onFailGoSelfHeal());
     }
 
@@ -116,11 +124,13 @@ public class LeaderElector implements Watcher, AutoCloseable {
      * - 如果存在，则只设表不推进：等待 NodeDeleted 事件到来。
      */
     private CompletableFuture<Void> watchLeader() {
-        if (stopped.get()) return CompletableFuture.completedFuture(null);
+        if (stopped.get())
+            return CompletableFuture.completedFuture(null);
 
         return zf.exists(MASTER, this)
                 .thenComposeAsync(opt -> {
-                    if (stopped.get()) return CompletableFuture.completedFuture(null);
+                    if (stopped.get())
+                        return CompletableFuture.completedFuture(null);
                     if (opt.isEmpty()) {
                         // 竞态：在挂表前 master 已被删除 → 立刻回入口，尝试抢主
                         return checkThenDecide();
@@ -137,11 +147,11 @@ public class LeaderElector implements Watcher, AutoCloseable {
      * - stopped 时短路返回。
      */
     private CompletableFuture<Void> onFailGoSelfHeal() {
-        if (stopped.get()) return CompletableFuture.completedFuture(null);
+        if (stopped.get())
+            return CompletableFuture.completedFuture(null);
 
-        Supplier<CompletableFuture<Void>> op = () ->
-                CompletableFuture.completedFuture(null)
-                        .thenComposeAsync(v -> checkThenDecide(), exec);
+        Supplier<CompletableFuture<Void>> op = () -> CompletableFuture.completedFuture(null)
+                .thenComposeAsync(v -> checkThenDecide(), exec);
 
         return ZkFutures.retryAsync(
                 op,
@@ -149,24 +159,24 @@ public class LeaderElector implements Watcher, AutoCloseable {
                 Duration.ofMillis(100),
                 zf.scheduler(),
                 KeeperException.ConnectionLossException.class,
-                KeeperException.OperationTimeoutException.class
-        ).exceptionally(e -> null);
+                KeeperException.OperationTimeoutException.class).exceptionally(e -> null);
     }
 
     /**
      * Watcher 回调（来自 ZK 事件线程）：
      * - 不做重活，只分发到 exec，保证串行推进；
      * - 关心 3 类事件：
-     *   1) Expired：仅通知上层（onExpired），不立即自愈，等待新会话建立（None+SyncConnected）再 check；
-     *   2) NodeDeleted：master 被删 → 回到统一入口（checkThenDecide）；
-     *   3) None+SyncConnected：重连成功 → 回到统一入口自检（checkThenDecide）。
+     * 1) Expired：仅通知上层（onExpired），不立即自愈，等待新会话建立（None+SyncConnected）再 check；
+     * 2) NodeDeleted：master 被删 → 回到统一入口（checkThenDecide）；
+     * 3) None+SyncConnected：重连成功 → 回到统一入口自检（checkThenDecide）。
      * - 其他事件：当前实现选择继续 watchLeader（可以视需求收紧为忽略）。
      *
      * 注：日志 “Session timed out” 更准确的表述应为 “ZooKeeper session expired”。
      */
     @Override
     public void process(final WatchedEvent e) {
-        if (stopped.get()) return;
+        if (stopped.get())
+            return;
         if (e.getState() == Event.KeeperState.Expired) {
             exec.submit(() -> {
                 LOG.warning("Session timed out"); // 建议文案：ZooKeeper session expired
@@ -202,6 +212,7 @@ public class LeaderElector implements Watcher, AutoCloseable {
      */
     @Override
     public void close() {
-        if (stopped.compareAndSet(false, true)) exec.shutdownNow();
+        if (stopped.compareAndSet(false, true))
+            exec.shutdownNow();
     }
 }
