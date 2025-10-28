@@ -41,7 +41,7 @@ import java.util.function.Consumer;
  * 
  * @author zeyu
  */
-public class TasksAssignee implements Watcher, AutoCloseable {
+public class WorkerAgent implements Watcher, AutoCloseable {
 
     /** ZooKeeper 异步操作封装 */
     private final ZkFutures zf;
@@ -85,14 +85,10 @@ public class TasksAssignee implements Watcher, AutoCloseable {
      * @param workerId    Worker唯一标识
      * @param workersPath Workers路径
      * @param assignPath  任务分配路径
+     * @param statusPath  状态根路径
      * @param taskHandler 任务处理回调
      */
-    public TasksAssignee(ZkFutures zf, String workerId, String workersPath, String assignPath,
-            Consumer<ZkFutures.NodeData> taskHandler) {
-        this(zf, workerId, workersPath, assignPath, "/status", taskHandler);
-    }
-
-    public TasksAssignee(ZkFutures zf, String workerId, String workersPath, String assignPath, String statusPath,
+    public WorkerAgent(ZkFutures zf, String workerId, String workersPath, String assignPath, String statusPath,
             Consumer<ZkFutures.NodeData> taskHandler) {
         this.zf = zf;
         this.workerId = workerId;

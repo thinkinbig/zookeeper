@@ -36,12 +36,14 @@ public class TaskResultWatcher implements Watcher, AutoCloseable {
                           Consumer<ZkFutures.NodeData> onUpdate) {
     }
 
-    private final String statusRoot = "/status";
+    /** 状态根路径, 例如 "/status" */
+    private final String statusPath; 
 
     private final ConcurrentHashMap<String, Pending> pendings = new ConcurrentHashMap<>();
 
-    public TaskResultWatcher(ZkFutures zf) {
+    public TaskResultWatcher(ZkFutures zf, String statusPath) {
         this.zf = zf;
+        this.statusPath = statusPath;
     }
 
     public CompletableFuture<Optional<String>> await(String statusZnode, Consumer<ZkFutures.NodeData> onUpdate) {
@@ -55,10 +57,10 @@ public class TaskResultWatcher implements Watcher, AutoCloseable {
 
 
     public CompletableFuture<Void> start() {
-        if (statusRoot == null || statusRoot.isEmpty()) {
+        if (statusPath == null || statusPath.isEmpty()) {
             return CompletableFuture.completedFuture(null);
         }
-        return zf.ensurePersistent(statusRoot)
+        return zf.ensurePersistent(statusPath)
                 .thenComposeAsync(v -> {
                     // 重新挂表全部待观察的路径
                     for (String path : pendings.keySet()) {
