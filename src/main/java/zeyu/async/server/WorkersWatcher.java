@@ -1,8 +1,10 @@
-package zeyu.async;
+package zeyu.async.server;
 
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
+
+import zeyu.async.common.ZkFutures;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -39,7 +41,7 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
     public record Diff(Snapshot snapshot, Set<String> added, Set<String> removed) {
     }
 
-    private final String path; // 例如：/workers
+    private final String workersPath; // 例如：/workers
     private final ZkFutures zf;
 
     /** 单线程执行器：把所有推进投递到这条队列，保证串行语义与可预期顺序 */
@@ -66,25 +68,33 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
     /** 关闭标志：确保关闭后不再推进、不中断退出过程 */
     private final AtomicBoolean stopped = new AtomicBoolean(false);
 
-    public WorkersWatcher(String path, ZkFutures zf,
+    public WorkersWatcher(String workersPath, ZkFutures zf,
             BiConsumer<Snapshot, Diff> onChanged,
             Consumer<Event.KeeperState> onExpired) {
-        this.path = path;
+        this.workersPath = workersPath;
         this.zf = zf;
         this.onChanged = onChanged;
         this.onExpired = onExpired;
     }
 
-    public WorkersWatcher(String path, ZkFutures zf,
+    public WorkersWatcher(String workersPath, ZkFutures zf,
             BiConsumer<Snapshot, Diff> onChanged) {
-        this.path = path;
+        this.workersPath = workersPath;
         this.zf = zf;
         this.onChanged = onChanged;
     }
 
     /** 启动：读取一次“事实快照”并挂上“一次性 watch”；后续靠事件或自愈再次进入 */
     public CompletableFuture<Void> start() {
-        return refreshWorkers();
+        Supplier<CompletableFuture<Void>> op = () -> zf.ensurePersistent(workersPath)
+                .thenComposeAsync(v -> refreshWorkers(), exec);
+        return ZkFutures.retryAsync(
+                op,
+                3,
+                Duration.ofMillis(100),
+                zf.scheduler(),
+                KeeperException.ConnectionLossException.class,
+                KeeperException.OperationTimeoutException.class).exceptionally(e -> null);
     }
 
     /**
@@ -99,8 +109,8 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
             return CompletableFuture.completedFuture(null);
         }
 
-        return zf.ensurePersistent(path)
-                .thenComposeAsync(v -> zf.getChildrenOrEmpty(path, this), exec)
+        return zf.ensurePersistent(workersPath)
+                .thenComposeAsync(v -> zf.getChildrenOrEmpty(workersPath, this), exec)
                 .thenAcceptAsync(op -> {
                     if (stopped.get()) {
                         return;
@@ -205,7 +215,7 @@ public class WorkersWatcher implements Watcher, AutoCloseable {
                 // 注意：不立即 refresh，等新会话建立（None+SyncConnected）后再进入
             });
         } else if (watchedEvent.getType() == Event.EventType.NodeChildrenChanged
-                && path.equals(watchedEvent.getPath())) {
+                && workersPath.equals(watchedEvent.getPath())) {
             // 子节点集合发生变化：再读一次事实 + 重新挂一次性 watch
             exec.submit(this::refreshWorkers);
 

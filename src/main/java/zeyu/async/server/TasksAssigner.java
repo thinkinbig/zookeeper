@@ -1,9 +1,11 @@
-package zeyu.async;
+package zeyu.async.server;
 
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooDefs;
+
+import zeyu.async.common.ZkFutures;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -13,8 +15,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Supplier;
-
-import static zeyu.async.ZkFutures.unwrap;
 
 /**
  * TasksAssigner - 任务分配器
@@ -77,8 +77,6 @@ public class TasksAssigner implements Watcher, AutoCloseable {
     /** Worker选择策略：根据任务数据和状态信息选择最适合的worker，无可用时返回null */
     private final Function<ZkFutures.NodeData, String> pickWorker;
 
-    /** Fencing 令牌：用于防止旧会话回魂 */
-    private final long fencingToken;
 
     /**
      * 构造函数
@@ -96,7 +94,6 @@ public class TasksAssigner implements Watcher, AutoCloseable {
         this.claimsPath = claimsPath;
         this.assignPath = assignPath;
         this.pickWorker = pickWorker;
-        this.fencingToken = System.currentTimeMillis() + ThreadLocalRandom.current().nextLong(1000);
     }
 
     /**
@@ -141,8 +138,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
     private CompletableFuture<Void> refreshTasks() {
         if (stopped.get())
             return CompletableFuture.completedFuture(null);
-        return zf.ensurePersistent(tasksPath)
-                .thenComposeAsync(v -> zf.getChildrenOrEmpty(tasksPath, this), exec)
+        return zf.getChildrenOrEmpty(tasksPath, this)
                 .thenComposeAsync(opt -> {
                     if (stopped.get())
                         return CompletableFuture.completedFuture(null);
@@ -194,14 +190,10 @@ public class TasksAssigner implements Watcher, AutoCloseable {
         if (stopped.get())
             return CompletableFuture.completedFuture(null);
 
-        // 创建 fencing 数据：包含时间戳和随机数，防止旧会话回魂
-        byte[] fencingData = createFencingData();
         String claimZ = claimsPath + "/" + taskId;
         String taskZ = tasksPath + "/" + taskId;
 
-        return zf.ensurePersistent(tasksPath)
-                .thenComposeAsync(v -> zf.ensurePersistent(claimsPath), exec)
-                .thenComposeAsync(v -> zf.createEphemeral(claimZ, fencingData, ZooDefs.Ids.OPEN_ACL_UNSAFE), exec)
+        return zf.createEphemeral(claimZ, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE)
                 .thenComposeAsync(v -> zf.getData(taskZ, this), exec)
                 .thenComposeAsync(dr -> {
                     String worker = pickWorker.apply(dr);
@@ -225,7 +217,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                 }, exec)
                 .exceptionallyCompose(ex -> {
                     // 失败路径：尽量把 claim 删掉（防泄露）
-                    Throwable t = unwrap(ex);
+                    Throwable t = ZkFutures.unwrap(ex);
                     if (t instanceof KeeperException.NoNodeException) {
                         // 任务被别人清了；删 claim
                         return safeReleaseClaim(claimZ);
@@ -288,45 +280,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                 .thenComposeAsync(x -> safeReleaseClaim(claimZ), exec);
     }
 
-    /**
-     * 创建 Fencing 数据
-     * 
-     * 生成包含时间戳和随机数的 fencing 数据，用于防止旧会话回魂。
-     * 格式：timestamp:random:fencingToken
-     * 
-     * @return fencing 数据字节数组
-     */
-    private byte[] createFencingData() {
-        long timestamp = System.currentTimeMillis();
-        long random = ThreadLocalRandom.current().nextLong();
-        String fencingString = String.format("%d:%d:%d", timestamp, random, fencingToken);
-        return fencingString.getBytes();
-    }
-
-    /**
-     * 验证 Fencing 数据
-     * 
-     * 检查认领数据是否来自当前会话，防止旧会话回魂。
-     * 
-     * @param data 认领数据
-     * @return true 如果是当前会话的数据
-     */
-    private boolean isValidFencingData(byte[] data) {
-        if (data == null || data.length == 0)
-            return false;
-
-        try {
-            String fencingString = new String(data);
-            String[] parts = fencingString.split(":");
-            if (parts.length != 3)
-                return false;
-
-            long token = Long.parseLong(parts[2]);
-            return token == fencingToken;
-        } catch (Exception e) {
-            return false;
-        }
-    }
+    // 自定义 fencing 去除，改用 Stat.ephemeralOwner 与当前会话对齐
 
     /**
      * 安全释放认领
@@ -347,7 +301,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                 KeeperException.ConnectionLossException.class,
                 KeeperException.OperationTimeoutException.class).exceptionally(e -> {
                     // NoNode 当成功；其他错误打点后吞掉，避免卡链
-                    Throwable t = unwrap(e);
+                    Throwable t = ZkFutures.unwrap(e);
                     if (t instanceof KeeperException.NoNodeException)
                         return null;
                     return null;
@@ -360,7 +314,7 @@ public class TasksAssigner implements Watcher, AutoCloseable {
      * 最终一致性保证机制：定期检测和修复各种不一致状态。
      * 包括孤儿claims清理、孤儿tasks重新分配、重复分配检测等。
      */
-    private void runCompensation() {
+    void runCompensation() {
         if (stopped.get())
             return;
 
@@ -414,17 +368,16 @@ public class TasksAssigner implements Watcher, AutoCloseable {
                                             return CompletableFuture.completedFuture(null);
                                         }, exec)
                                         .thenComposeAsync(v -> {
-                                            // 验证 fencing 数据，清理旧会话的认领
-                                            return zf.getData(claimZ, null)
-                                                    .thenComposeAsync(data -> {
-                                                        if (!isValidFencingData(data.data())) {
-                                                            // 旧会话的认领，删除
-                                                            return zf.delete(claimZ, -1)
-                                                                    .exceptionally(e -> null);
-                                                        }
-                                                        return CompletableFuture.completedFuture(null);
-                                                    }, exec)
-                                                    .exceptionally(e -> null);
+                        // 校验会话：ephemeralOwner 不等于当前 sessionId 视为旧会话认领，删除
+                        return zf.getData(claimZ, null)
+                                .thenComposeAsync(nd -> {
+                                    long owner = (nd.stat() != null) ? nd.stat().getEphemeralOwner() : -1L;
+                                    if (owner != zf.raw().getSessionId()) {
+                                        return zf.delete(claimZ, -1).exceptionally(e -> null);
+                                    }
+                                    return CompletableFuture.completedFuture(null);
+                                }, exec)
+                                .exceptionally(e -> null);
                                         }, exec));
                     }
 

@@ -1,4 +1,4 @@
-package zeyu.async;
+package zeyu.async.common;
 
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.ACL;
@@ -225,7 +225,7 @@ public class ZkFutures implements AutoCloseable {
         return cause instanceof KeeperException.OperationTimeoutException;
     }
 
-    static Throwable unwrap(Throwable e) {
+    public static Throwable unwrap(Throwable e) {
         if (e instanceof CompletionException ce && ce.getCause() != null) {
             return ce.getCause();
         }

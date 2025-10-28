@@ -1,9 +1,11 @@
-package zeyu.async;
+package zeyu.async.client;
 
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.KeeperException.ConnectionLossException;
 import org.apache.zookeeper.KeeperException.OperationTimeoutException;
+
+import zeyu.async.common.ZkFutures;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -17,10 +19,6 @@ import java.util.function.Consumer;
 
 /**
  * TaskResultWatcher - 客户端等待任务结果的轻量工具
- *
- * 用法：
- * - 任务提交后，调用 await("/status/{taskId}", onUpdate) 等待结果。
- * - 该 watcher 对结果节点挂一次性 watch；被触发或存在即返回数据。
  */
 public class TaskResultWatcher implements Watcher, AutoCloseable {
 
@@ -55,14 +53,12 @@ public class TaskResultWatcher implements Watcher, AutoCloseable {
         return cf;
     }
 
-
     public CompletableFuture<Void> start() {
         if (statusPath == null || statusPath.isEmpty()) {
             return CompletableFuture.completedFuture(null);
         }
         return zf.ensurePersistent(statusPath)
                 .thenComposeAsync(v -> {
-                    // 重新挂表全部待观察的路径
                     for (String path : pendings.keySet()) {
                         exec.submit(() -> rearmAndFetch(path));
                     }
@@ -75,11 +71,9 @@ public class TaskResultWatcher implements Watcher, AutoCloseable {
         if (stopped.get()) return;
 
         if (event.getState() == Event.KeeperState.Expired) {
-            // 等待新的 SyncConnected 再继续
             return;
         }
         if (event.getType() == Event.EventType.None && event.getState() == Event.KeeperState.SyncConnected) {
-            // 重新挂表全部待观察的路径
             for (String path : pendings.keySet()) {
                 exec.submit(() -> rearmAndFetch(path));
             }
@@ -107,7 +101,6 @@ public class TaskResultWatcher implements Watcher, AutoCloseable {
         CompletableFuture<Optional<String>> sink = pending.future();
         if (sink.isDone()) return;
 
-        // 先 exists 以便在节点不存在时挂上 NodeCreated 的一次性 watch
         ZkFutures.retryAsync(
                 () -> zf.exists(path, this),
                 3,
@@ -118,10 +111,8 @@ public class TaskResultWatcher implements Watcher, AutoCloseable {
                 .thenComposeAsync(opt -> {
                     if (stopped.get() || sink.isDone()) return CompletableFuture.completedFuture(null);
                     if (opt.isEmpty()) {
-                        // 不存在：已挂表等待 NodeCreated，先返回
                         return CompletableFuture.completedFuture(null);
                     }
-                    // 已存在：读取数据并在回调线程里完成
                     return ZkFutures.retryAsync(
                             () -> zf.getData(path, this),
                             3,

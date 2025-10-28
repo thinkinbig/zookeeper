@@ -2,6 +2,9 @@ package zeyu.async;
 
 import org.apache.zookeeper.KeeperException;
 
+import zeyu.async.common.LeaderElector;
+import zeyu.async.common.ZkFutures;
+
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
